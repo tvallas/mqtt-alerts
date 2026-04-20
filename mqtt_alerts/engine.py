@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -391,5 +390,5 @@ def _create_alert_instance(
 
 def _coerce_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

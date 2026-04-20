@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from typing import Any, Protocol
 from urllib.parse import quote
@@ -156,7 +156,7 @@ class TelegramBackend:  # pylint: disable=too-many-instance-attributes
         if not self._config.polling_enabled:
             return []
 
-        current_time = now or datetime.now(UTC)
+        current_time = now or datetime.now(timezone.utc)
         if not self.ready_to_poll(current_time):
             return []
 
@@ -438,5 +438,7 @@ def _append_acknowledgement_note(message_text: str, alert: AlertInstance) -> str
     actor = alert.acknowledged_by or "unknown user"
     if alert.acknowledged_at is None:
         return f"{message_text}\n\nAcknowledged by {actor}"
-    timestamp = alert.acknowledged_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
+    timestamp = alert.acknowledged_at.astimezone(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%SZ"
+    )
     return f"{message_text}\n\nAcknowledged by {actor} at {timestamp}"
