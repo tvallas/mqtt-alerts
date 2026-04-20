@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import paho.mqtt.client as mqtt
@@ -30,6 +31,64 @@ def test_on_connect_subscribes_when_reason_code_is_success(tmp_path) -> None:
     app._on_connect(client, None, None, reason_code)  # pylint: disable=protected-access
 
     assert subscriptions == ["measurements/A118636/27054"]
+
+
+def test_reload_config_updates_topics_and_subscriptions(tmp_path: Path) -> None:
+    """A valid sensor/rule reload should update the active subscriptions in place."""
+    config_path = tmp_path / "config.yml"
+    _write_config(config_path, sensor_topic="measurements/freezer1")
+    app = MqttAlertsApp.from_config_file(str(config_path))
+    subscriptions: list[str] = []
+    unsubscriptions: list[str] = []
+    app._client = SimpleNamespace(  # pylint: disable=protected-access
+        is_connected=lambda: True,
+        subscribe=subscriptions.append,
+        unsubscribe=unsubscriptions.append,
+    )
+
+    _write_config(config_path, sensor_topic="measurements/freezer2")
+
+    app._reload_config_if_changed()  # pylint: disable=protected-access
+
+    assert app._engine.subscribed_topics() == ["measurements/freezer2"]  # pylint: disable=protected-access
+    assert subscriptions == ["measurements/freezer2"]
+    assert unsubscriptions == ["measurements/freezer1"]
+    app._state_store.close()  # pylint: disable=protected-access
+
+
+def test_reload_config_rejects_mqtt_changes(tmp_path: Path, caplog) -> None:
+    """MQTT connection changes require a restart instead of a hot reload."""
+    config_path = tmp_path / "config.yml"
+    _write_config(config_path, mqtt_host="localhost")
+    app = MqttAlertsApp.from_config_file(str(config_path))
+    app._client = SimpleNamespace(  # pylint: disable=protected-access
+        is_connected=lambda: True,
+        subscribe=lambda _topic: None,
+        unsubscribe=lambda _topic: None,
+    )
+
+    _write_config(config_path, mqtt_host="broker.internal")
+
+    app._reload_config_if_changed()  # pylint: disable=protected-access
+
+    assert app.config.mqtt.host == "localhost"
+    assert "restart required" in caplog.text
+    app._state_store.close()  # pylint: disable=protected-access
+
+
+def test_reload_config_keeps_previous_runtime_on_invalid_config(tmp_path: Path, caplog) -> None:
+    """Invalid config edits should be logged and ignored without replacing the live config."""
+    config_path = tmp_path / "config.yml"
+    _write_config(config_path, sensor_topic="measurements/freezer1")
+    app = MqttAlertsApp.from_config_file(str(config_path))
+
+    config_path.write_text("mqtt:\n  host: localhost\n", encoding="utf-8")
+
+    app._reload_config_if_changed()  # pylint: disable=protected-access
+
+    assert app._engine.subscribed_topics() == ["measurements/freezer1"]  # pylint: disable=protected-access
+    assert "config reload failed" in caplog.text
+    app._state_store.close()  # pylint: disable=protected-access
 
 
 def _build_config(database_path: str) -> AppConfig:
@@ -64,4 +123,43 @@ def _build_sensor() -> SensorConfig:
                 backend="main_ntfy",
             ),
         ),
+    )
+
+
+def _write_config(
+    config_path: Path,
+    *,
+    sensor_topic: str = "measurements/A118636/27054",
+    mqtt_host: str = "localhost",
+) -> None:
+    config_path.write_text(
+        f"""
+mqtt:
+  host: {mqtt_host}
+  port: 1883
+
+state:
+  database: {config_path.parent / "state.sqlite3"}
+
+notifications:
+  backends:
+    - id: main_ntfy
+      type: ntfy
+      server: https://ntfy.sh
+      topic: topic
+
+sensors:
+  - id: kitchen_fridge
+    name: Kitchen fridge
+    topic: {sensor_topic}
+    value_field: reading
+    rules:
+      - id: high_warn
+        direction: above
+        threshold: 6.0
+        for: 20m
+        severity: warning
+        backend: main_ntfy
+""",
+        encoding="utf-8",
     )
