@@ -42,6 +42,7 @@ ENV/
 
 # Project files
 config.yml
+mqtt-alerts.sqlite3
 *.sqlite3
 *.sqlite3-journal
 *.sqlite3-wal
