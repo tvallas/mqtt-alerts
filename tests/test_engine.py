@@ -37,7 +37,8 @@ def test_above_threshold_alerts_after_hold_time() -> None:
     assert third.notifications[0].rule_id == "high_warn"
     assert "6.30" in third.notifications[0].message
     assert "Threshold: above 5.00" in third.notifications[0].message
-    assert "Duration: 15m" in third.notifications[0].message
+    assert "Trigger after: 15m" in third.notifications[0].message
+    assert "Exceeded for: 15m" in third.notifications[0].message
     assert "\nCurrent value: 6.30" in third.notifications[0].message
 
 
@@ -133,6 +134,7 @@ def test_sends_recovery_notification_after_triggered_alert_clears() -> None:
     assert recovered.notifications[0].title == "Freezer 1 recovered"
     assert "4.90" in recovered.notifications[0].message
     assert "Normal range: below 5.00" in recovered.notifications[0].message
+    assert "Exceeded for: 16m" in recovered.notifications[0].message
     assert "\nCurrent value: 4.90" in recovered.notifications[0].message
 
 
@@ -171,6 +173,95 @@ def test_recovery_notification_can_be_disabled_per_rule() -> None:
     )
 
     assert not recovered.notifications
+
+
+def test_above_rule_hysteresis_prevents_flapping_recovery() -> None:
+    """An active above-threshold rule should not clear until it crosses the hysteresis band."""
+    sensor = _build_sensor(
+        rules=(
+            RuleConfig(
+                id="high_warn",
+                direction="above",
+                threshold=5.0,
+                hysteresis=0.5,
+                hold_for=timedelta(minutes=1),
+                severity="low",
+                backend="main_ntfy",
+            ),
+        )
+    )
+    engine = AlertEngine((sensor,))
+    start = _utc(2025, 1, 1, 12, 30, 0)
+
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 5.6},
+        observed_at=start,
+    )
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 5.7},
+        observed_at=start + timedelta(minutes=1),
+    )
+    still_active = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 4.8},
+        observed_at=start + timedelta(minutes=2),
+    )
+    recovered = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 4.5},
+        observed_at=start + timedelta(minutes=3),
+    )
+
+    assert not still_active.notifications
+    assert engine.state_for("freezer_1", "high_warn").condition_active is False
+    assert len(recovered.notifications) == 1
+    assert recovered.notifications[0].kind == "recovery"
+
+
+def test_below_rule_hysteresis_prevents_flapping_recovery() -> None:
+    """An active below-threshold rule should not clear until it crosses the hysteresis band."""
+    sensor = _build_sensor(
+        rules=(
+            RuleConfig(
+                id="low_warn",
+                direction="below",
+                threshold=-10.0,
+                hysteresis=1.0,
+                hold_for=timedelta(minutes=1),
+                severity="low",
+                backend="main_ntfy",
+            ),
+        )
+    )
+    engine = AlertEngine((sensor,))
+    start = _utc(2025, 1, 1, 12, 45, 0)
+
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": -11.0},
+        observed_at=start,
+    )
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": -11.1},
+        observed_at=start + timedelta(minutes=1),
+    )
+    still_active = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": -9.5},
+        observed_at=start + timedelta(minutes=2),
+    )
+    recovered = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": -9.0},
+        observed_at=start + timedelta(minutes=3),
+    )
+
+    assert not still_active.notifications
+    assert len(recovered.notifications) == 1
+    assert recovered.notifications[0].kind == "recovery"
 
 
 def test_multiple_rules_on_same_sensor_are_independent() -> None:
@@ -312,7 +403,10 @@ def test_custom_messages_include_live_values() -> None:
         observed_at=start + timedelta(minutes=16),
     )
 
-    assert triggered.notifications[0].message == "Custom alert text\nCurrent value: 6.30."
+    assert (
+        triggered.notifications[0].message
+        == "Custom alert text\nExceeded for: 15m\nCurrent value: 6.30"
+    )
     assert recovered.notifications[0].message == "Recovered with value 4.70"
 
 

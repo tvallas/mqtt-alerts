@@ -30,9 +30,15 @@ def parse_duration(text: str) -> timedelta:
 
 
 def format_duration(value: timedelta) -> str:
-    """Render a timedelta in the compact format used by the config file."""
+    """Render a timedelta using compact mixed units such as ``2m 7s``."""
     total_seconds = int(value.total_seconds())
-    for suffix, divisor in (("d", 86400), ("h", 3600), ("m", 60)):
-        if total_seconds % divisor == 0 and total_seconds >= divisor:
-            return f"{total_seconds // divisor}{suffix}"
-    return f"{total_seconds}s"
+    if total_seconds <= 0:
+        return "0s"
+
+    parts: list[str] = []
+    remainder = total_seconds
+    for suffix, divisor in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+        amount, remainder = divmod(remainder, divisor)
+        if amount:
+            parts.append(f"{amount}{suffix}")
+    return " ".join(parts)

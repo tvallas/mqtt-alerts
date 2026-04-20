@@ -62,6 +62,7 @@ class RuleConfig:  # pylint: disable=too-many-instance-attributes
     hold_for: timedelta
     severity: str
     backend: str
+    hysteresis: float = 0.0
     enabled: bool = True
     title: str | None = None
     message: str | None = None
@@ -264,6 +265,10 @@ def _load_rules(sensor_id: str, raw_value: Any) -> list[RuleConfig]:
                 threshold=_coerce_float(
                     entry.get("threshold"), f"sensor {sensor_id} rules[{index}].threshold"
                 ),
+                hysteresis=_coerce_non_negative_float(
+                    entry.get("hysteresis", 0.0),
+                    f"sensor {sensor_id} rules[{index}].hysteresis",
+                ),
                 hold_for=hold_for,
                 severity=_require_string(
                     entry.get("severity"), f"sensor {sensor_id} rules[{index}].severity"
@@ -325,6 +330,13 @@ def _coerce_float(value: Any, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{field_name} must be numeric")
     return float(value)
+
+
+def _coerce_non_negative_float(value: Any, field_name: str) -> float:
+    result = _coerce_float(value, field_name)
+    if result < 0:
+        raise ConfigError(f"{field_name} must be greater than or equal to zero")
+    return result
 
 
 def _coerce_bool(value: Any, field_name: str) -> bool:

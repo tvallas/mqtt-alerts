@@ -96,6 +96,7 @@ sensors:
       - id: high_warn
         direction: above
         threshold: 5.0
+        hysteresis: 0.5
         for: 15m
         severity: low
         backend: main_ntfy
@@ -120,6 +121,7 @@ Notes:
 - `mqtt.topic_prefix` is optional. If set, sensor topics are resolved under that prefix unless already fully prefixed.
 - each sensor can have many rules
 - each rule has its own severity, backend, timing, and enabled flag
+- each rule can define `hysteresis` to avoid alert/recovery flapping near the threshold
 - each rule can customize automatic recovery messages (`recovery_enabled`, `recovery_title`, `recovery_message`)
 - state is tracked per `(sensor_id, rule_id)` pair
 

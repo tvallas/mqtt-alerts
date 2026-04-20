@@ -62,6 +62,7 @@ sensors:
     assert isinstance(config.notification_backends[0], NtfyBackendConfig)
     assert config.sensors[0].rules[1].severity == "critical"
     assert config.sensors[0].rules[0].recovery_enabled is True
+    assert config.sensors[0].rules[0].hysteresis == 0.0
 
 
 def test_load_config_rejects_unknown_backend_reference(tmp_path: Path) -> None:
@@ -97,3 +98,40 @@ sensors:
 
     with pytest.raises(ConfigError, match="unknown backend"):
         load_config(config_path)
+
+
+def test_load_config_supports_rule_hysteresis(tmp_path: Path) -> None:
+    """Rules can define a non-negative hysteresis margin."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+mqtt:
+  host: localhost
+
+notifications:
+  backends:
+    - id: main_ntfy
+      type: ntfy
+      server: https://ntfy.sh
+      topic: alerts
+
+sensors:
+  - id: freezer_1
+    topic: measurements/freezer1
+    value_field: temperature
+    rules:
+      - id: high_warn
+        direction: above
+        threshold: 5.0
+        hysteresis: 0.5
+        for: 15m
+        severity: low
+        backend: main_ntfy
+        enabled: true
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.sensors[0].rules[0].hysteresis == 0.5
