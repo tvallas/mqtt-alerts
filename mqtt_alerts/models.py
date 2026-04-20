@@ -26,11 +26,24 @@ class RuleState:
     triggered_at: datetime | None = None
     last_notification_at: datetime | None = None
 
+    def durable_snapshot(
+        self,
+    ) -> tuple[bool, datetime | None, bool, datetime | None, datetime | None]:
+        """Return only the fields that matter for restart correctness."""
+        return (
+            self.condition_active,
+            self.active_since,
+            self.alert_triggered,
+            self.triggered_at,
+            self.last_notification_at,
+        )
+
 
 @dataclass(frozen=True)
 class Notification:  # pylint: disable=too-many-instance-attributes
     """Notification emitted by the alert engine."""
 
+    kind: str
     backend_id: str
     sensor_id: str
     sensor_name: str

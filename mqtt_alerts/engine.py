@@ -43,8 +43,10 @@ class AlertEngine:
 
             key = RuleKey(sensor_id=sensor.id, rule_id=rule.id)
             state = self._state.setdefault(key, RuleState())
+            previous_snapshot = state.durable_snapshot()
             notification = self._evaluate_rule(sensor, rule, state, value, observed_at)
-            state_updates[key] = state
+            if state.durable_snapshot() != previous_snapshot:
+                state_updates[key] = state
             if notification is not None:
                 notifications.append(notification)
 
@@ -81,14 +83,17 @@ class AlertEngine:
                 state.alert_triggered = True
                 state.triggered_at = observed_at
                 state.last_notification_at = observed_at
-                return _build_notification(sensor, rule, value, observed_at)
+                return _build_alert_notification(sensor, rule, value, observed_at)
             return None
 
+        should_send_recovery = state.alert_triggered and rule.recovery_enabled
         state.condition_active = False
         state.active_since = None
         state.alert_triggered = False
         state.triggered_at = None
         state.last_notification_at = None
+        if should_send_recovery:
+            return _build_recovery_notification(sensor, rule, value, observed_at)
         return None
 
 
@@ -105,18 +110,27 @@ def _condition_matches(rule: RuleConfig, value: float) -> bool:
     return value < rule.threshold
 
 
-def _build_notification(
+def _build_alert_notification(
     sensor: SensorConfig,
     rule: RuleConfig,
     value: float,
     observed_at: datetime,
 ) -> Notification:
     title = rule.title or f"{sensor.name} {rule.severity} alert"
-    message = rule.message or (
-        f"{sensor.name} value {value:.2f} is {rule.direction} {rule.threshold:.2f} "
-        f"for {format_duration(rule.hold_for)}."
+    message = _render_message(
+        template=rule.message,
+        fallback=(
+            f"{sensor.name} alert\n"
+            f"Threshold: {rule.direction} {rule.threshold:.2f}\n"
+            f"Duration: {format_duration(rule.hold_for)}\n"
+            f"Current value: {value:.2f}"
+        ),
+        sensor=sensor,
+        rule=rule,
+        value=value,
     )
     return Notification(
+        kind="alert",
         backend_id=rule.backend,
         sensor_id=sensor.id,
         sensor_name=sensor.name,
@@ -130,3 +144,62 @@ def _build_notification(
         direction=rule.direction,
         occurred_at=observed_at,
     )
+
+
+def _build_recovery_notification(
+    sensor: SensorConfig,
+    rule: RuleConfig,
+    value: float,
+    observed_at: datetime,
+) -> Notification:
+    title = rule.recovery_title or f"{sensor.name} recovered"
+    normal_direction = "below" if rule.direction == "above" else "above"
+    message = _render_message(
+        template=rule.recovery_message,
+        fallback=(
+            f"{sensor.name} recovered\n"
+            f"Normal range: {normal_direction} {rule.threshold:.2f}\n"
+            f"Current value: {value:.2f}"
+        ),
+        sensor=sensor,
+        rule=rule,
+        value=value,
+    )
+    return Notification(
+        kind="recovery",
+        backend_id=rule.backend,
+        sensor_id=sensor.id,
+        sensor_name=sensor.name,
+        sensor_topic=sensor.topic,
+        rule_id=rule.id,
+        severity=rule.severity,
+        title=title,
+        message=message,
+        value=value,
+        threshold=rule.threshold,
+        direction=rule.direction,
+        occurred_at=observed_at,
+    )
+
+
+def _render_message(
+    template: str | None,
+    fallback: str,
+    sensor: SensorConfig,
+    rule: RuleConfig,
+    value: float,
+) -> str:
+    if template is None:
+        return fallback
+
+    if "{" in template and "}" in template:
+        return template.format(
+            sensor=sensor.name,
+            value=f"{value:.2f}",
+            threshold=f"{rule.threshold:.2f}",
+            direction=rule.direction,
+            severity=rule.severity,
+            duration=format_duration(rule.hold_for),
+        )
+
+    return f"{template}\nCurrent value: {value:.2f}."

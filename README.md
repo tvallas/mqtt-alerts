@@ -17,6 +17,7 @@ That separation keeps the data publishing path simple while allowing alerting an
 - tracks alert timing per rule with a hold duration such as `15m`
 - persists minimal per-rule state in SQLite so restart recovery is correct
 - sends notifications through pluggable backends
+- sends automatic recovery notifications when triggered rules return to normal
 
 ## What It Does Not Do
 
@@ -101,6 +102,9 @@ sensors:
         enabled: true
         title: Freezer 1 warning
         message: Temperature is above limit
+        recovery_enabled: true
+        recovery_title: Freezer 1 recovered
+        recovery_message: Temperature is back within range
 
       - id: high_critical
         direction: above
@@ -116,6 +120,7 @@ Notes:
 - `mqtt.topic_prefix` is optional. If set, sensor topics are resolved under that prefix unless already fully prefixed.
 - each sensor can have many rules
 - each rule has its own severity, backend, timing, and enabled flag
+- each rule can customize automatic recovery messages (`recovery_enabled`, `recovery_title`, `recovery_message`)
 - state is tracked per `(sensor_id, rule_id)` pair
 
 ## Notification Backends

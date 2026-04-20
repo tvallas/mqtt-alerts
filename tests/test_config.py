@@ -61,6 +61,7 @@ sensors:
     assert len(config.sensors[0].rules) == 2
     assert isinstance(config.notification_backends[0], NtfyBackendConfig)
     assert config.sensors[0].rules[1].severity == "critical"
+    assert config.sensors[0].rules[0].recovery_enabled is True
 
 
 def test_load_config_rejects_unknown_backend_reference(tmp_path: Path) -> None:

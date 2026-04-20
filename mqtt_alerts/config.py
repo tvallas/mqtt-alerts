@@ -65,6 +65,9 @@ class RuleConfig:  # pylint: disable=too-many-instance-attributes
     enabled: bool = True
     title: str | None = None
     message: str | None = None
+    recovery_enabled: bool = True
+    recovery_title: str | None = None
+    recovery_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -276,6 +279,18 @@ def _load_rules(sensor_id: str, raw_value: Any) -> list[RuleConfig]:
                 ),
                 message=_optional_string(
                     entry.get("message"), f"sensor {sensor_id} rules[{index}].message"
+                ),
+                recovery_enabled=_coerce_bool(
+                    entry.get("recovery_enabled", True),
+                    f"sensor {sensor_id} rules[{index}].recovery_enabled",
+                ),
+                recovery_title=_optional_string(
+                    entry.get("recovery_title"),
+                    f"sensor {sensor_id} rules[{index}].recovery_title",
+                ),
+                recovery_message=_optional_string(
+                    entry.get("recovery_message"),
+                    f"sensor {sensor_id} rules[{index}].recovery_message",
                 ),
             )
         )

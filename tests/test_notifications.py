@@ -23,9 +23,11 @@ def test_ntfy_backend_builds_expected_request() -> None:
             return False
 
         def read(self):
+            """Return a small successful response body."""
             return b"ok"
 
     def fake_open(request, timeout):
+        """Capture the outbound request instead of sending it."""
         captured["url"] = request.full_url
         captured["data"] = request.data
         captured["headers"] = dict(request.header_items())
@@ -44,6 +46,7 @@ def test_ntfy_backend_builds_expected_request() -> None:
 
     backend.send(
         Notification(
+            kind="alert",
             backend_id="main_ntfy",
             sensor_id="freezer_1",
             sensor_name="Freezer 1",
@@ -63,5 +66,5 @@ def test_ntfy_backend_builds_expected_request() -> None:
     assert captured["data"] == b"Temperature is too high"
     assert captured["headers"]["Title"] == "Freezer critical alert"
     assert captured["headers"]["Priority"] == "5"
-    assert captured["headers"]["Tags"] == "rotating_light,skull"
+    assert captured["headers"]["Tags"] == "rotating_light"
     assert captured["timeout"] == 10

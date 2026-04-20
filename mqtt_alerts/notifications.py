@@ -114,5 +114,5 @@ def _map_tags(severity: str) -> str:
         "warning": "warning",
         "medium": "warning",
         "high": "rotating_light",
-        "critical": "rotating_light,skull",
+        "critical": "rotating_light",
     }.get(severity.lower(), "warning")
