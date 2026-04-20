@@ -1,0 +1,91 @@
+name: Docker Publish
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Released git ref or tag to publish from
+        required: true
+        type: string
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  attestations: write
+  id-token: write
+
+jobs:
+  docker-publish:
+    name: Build and publish Docker image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out released source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Determine image tags from pyproject.toml
+        shell: bash
+        run: |
+          VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )"
+          MAJOR_MINOR="$(echo "$VERSION" | cut -d. -f1,2)"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "MAJOR_MINOR=$MAJOR_MINOR" >> "$GITHUB_ENV"
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: tvallas/mqtt-alerts
+          flavor: |
+            latest=false
+          labels: |
+            org.opencontainers.image.title=mqtt-alerts
+            org.opencontainers.image.description=mqtt-alerts container image
+            org.opencontainers.image.vendor=tvallas
+            org.opencontainers.image.authors=tvallas
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ env.RELEASE_SHA }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
+          tags: |
+            tvallas/mqtt-alerts:${{ env.VERSION }}
+            tvallas/mqtt-alerts:${{ env.MAJOR_MINOR }}
+            tvallas/mqtt-alerts:latest
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
