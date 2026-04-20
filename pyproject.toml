@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mqtt-alerts"
+version = "0.0.0"
+description = "MQTT alert daemon with pluggable notification backends"
+readme = "README.md"
+authors = [
+  { name = "topo", email = "tvallas@iki.fi" }
+]
+requires-python = ">=3.10"
+dependencies = [
+  "paho-mqtt>=2,<3",
+  "PyYAML>=6,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/tvallas/mqtt-alerts"
+Repository = "https://github.com/tvallas/mqtt-alerts"
+
+[project.scripts]
+mqtt-alerts = "mqtt_alerts.cli:main"
+
+[dependency-groups]
+dev = [
+  "black>=26.3.1,<27",
+  "pylint",
+  "pytest>=9.0.3,<10",
+  "python-semantic-release>=10,<11",
+]
+
+[tool.setuptools]
+packages = ["mqtt_alerts"]
+
+[tool.semantic_release]
+allow_zero_version = true
+commit_parser = "conventional"
+tag_format = "v{version}"
+commit_message = "chore(release): {version}"
+version_toml = ["pyproject.toml:project.version"]
+build_command = """
+python -m pip install "uv>=0.11,<0.12"
+rm -rf dist
+uv lock
+uv build
+"""
+
+[tool.semantic_release.changelog]
+mode = "update"
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
