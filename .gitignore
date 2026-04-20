@@ -42,9 +42,13 @@ ENV/
 
 # Project files
 config.yml
+config.local.yml
 mqtt-alerts.sqlite3
 *.sqlite3
 *.sqlite3-journal
 *.sqlite3-wal
 *.sqlite3-shm
 mqtt-alerts.code-workspace
+docker-compose.local.yml
+mosquitto/
+state/
