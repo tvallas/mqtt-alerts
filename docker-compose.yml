@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: mosquitto
+    restart: always
+    ports:
+      - "1883:1883"
+    command: mosquitto -c /mosquitto-no-auth.conf
+
+  mqtt-alerts:
+    image: tvallas/mqtt-alerts:latest
+    container_name: mqtt-alerts
+    restart: always
+    depends_on:
+      - mosquitto
+    volumes:
+      - type: bind
+        source: ./sample_config.yml
+        target: /config/config.yml
+      - type: bind
+        source: ./state
+        target: /state
+    command: ["--config", "/config/config.yml"]

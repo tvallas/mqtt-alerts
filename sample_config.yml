@@ -1,0 +1,38 @@
+mqtt:
+  host: localhost
+  port: 1883
+  topic_prefix: measurements
+
+state:
+  database: ./mqtt-alerts.sqlite3
+
+notifications:
+  backends:
+    - id: main_ntfy
+      type: ntfy
+      server: https://ntfy.sh
+      topic: some-secret-topic
+
+sensors:
+  - id: freezer_1
+    name: Freezer 1
+    topic: receiver1/freezer1
+    value_field: temperature
+    rules:
+      - id: high_warn
+        direction: above
+        threshold: 5.0
+        for: 15m
+        severity: low
+        backend: main_ntfy
+        enabled: true
+        title: Freezer 1 warning
+        message: Temperature is above limit
+
+      - id: high_critical
+        direction: above
+        threshold: 8.0
+        for: 10m
+        severity: critical
+        backend: main_ntfy
+        enabled: true
