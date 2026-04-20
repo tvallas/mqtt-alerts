@@ -104,8 +104,11 @@ def test_reload_config_keeps_previous_runtime_on_invalid_config(
     app._state_store.close()  # pylint: disable=protected-access
 
 
-def test_poll_notification_backends_acknowledges_active_alert(tmp_path: Path) -> None:
+def test_poll_notification_backends_acknowledges_active_alert(
+    tmp_path: Path, caplog
+) -> None:
     """Telegram callback polling should update alert state and persist the acknowledgement."""
+    caplog.set_level("INFO")
     state_store = SQLiteStateStore(str(tmp_path / "state.sqlite3"))
     engine = AlertEngine((_build_sensor(),))
     start = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
@@ -160,6 +163,8 @@ def test_poll_notification_backends_acknowledges_active_alert(tmp_path: Path) ->
     assert state.current_alert.state == "acknowledged"
     assert state.current_alert.acknowledged_by == "@alice"
     assert captured["result"].status == "acknowledged"
+    assert "acknowledged alert id=" in caplog.text
+    assert "sensor=kitchen_fridge rule=high_warn by=@alice" in caplog.text
     state_store.close()
 
 

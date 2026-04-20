@@ -12,7 +12,9 @@ import paho.mqtt.client as mqtt
 
 from mqtt_alerts.config import AppConfig, ConfigError, load_config
 from mqtt_alerts.engine import AlertEngine
-from mqtt_alerts.models import EvaluationResult, RuleKey
+from mqtt_alerts.models import ACK_STATUS_ACKNOWLEDGED, ACK_STATUS_ALREADY_ACKNOWLEDGED
+from mqtt_alerts.models import ACK_STATUS_NOT_ACTIVE, ACK_STATUS_NOT_FOUND
+from mqtt_alerts.models import AcknowledgementResult, EvaluationResult, RuleKey
 from mqtt_alerts.notifications import (
     NotificationDispatcher,
     NotificationError,
@@ -201,6 +203,7 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
                         result.state_updates,
                         result.alert_updates,
                     )
+                _log_acknowledgement_result(result, interaction.alert_id)
                 try:
                     backend.finalize_acknowledgement(interaction, result)
                 except NotificationError as error:
@@ -311,6 +314,29 @@ def _rollback_state_after_delivery_error(
     current_alert = previous_state.current_alert
     if current_alert is not None:
         result.alert_updates[current_alert.id] = current_alert.copy()
+
+
+def _log_acknowledgement_result(
+    result: AcknowledgementResult, alert_id: str
+) -> None:
+    alert = result.alert
+    if result.status == ACK_STATUS_ACKNOWLEDGED and alert is not None:
+        LOGGER.info(
+            "acknowledged alert id=%s sensor=%s rule=%s by=%s",
+            alert.id,
+            alert.sensor_id,
+            alert.rule_id,
+            alert.acknowledged_by or "unknown",
+        )
+        return
+    if result.status == ACK_STATUS_ALREADY_ACKNOWLEDGED:
+        LOGGER.info("alert id=%s was already acknowledged", alert_id)
+        return
+    if result.status == ACK_STATUS_NOT_ACTIVE:
+        LOGGER.info("alert id=%s is no longer active", alert_id)
+        return
+    if result.status == ACK_STATUS_NOT_FOUND:
+        LOGGER.info("alert id=%s was not found for acknowledgement", alert_id)
 
 
 def _read_config_mtime_ns(path: Path) -> int | None:
