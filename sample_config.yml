@@ -8,6 +8,14 @@ state:
 
 notifications:
   backends:
+    - id: main_telegram
+      type: telegram
+      bot_token: 123456789:replace-me
+      chat_id: -1001234567890
+      polling_enabled: true
+      polling_timeout_seconds: 1
+      polling_interval_seconds: 0.0
+
     - id: main_ntfy
       type: ntfy
       server: https://ntfy.sh
@@ -22,12 +30,16 @@ sensors:
       - id: high_warn
         direction: above
         threshold: 5.0
+        hysteresis: 0.5
         for: 15m
-        severity: low
-        backend: main_ntfy
+        severity: warning
+        backend: main_telegram
         enabled: true
         title: Freezer 1 warning
         message: Temperature is above limit
+        recovery_enabled: true
+        recovery_title: Freezer 1 recovered
+        recovery_message: Temperature is back within range
 
       - id: high_critical
         direction: above
