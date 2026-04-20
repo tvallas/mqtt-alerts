@@ -12,10 +12,16 @@ import paho.mqtt.client as mqtt
 
 from mqtt_alerts.config import AppConfig, ConfigError, load_config
 from mqtt_alerts.engine import AlertEngine
-from mqtt_alerts.models import EvaluationResult, RuleKey
-from mqtt_alerts.notifications import NotificationDispatcher, NotificationError, build_backends
+from mqtt_alerts.models import ACK_STATUS_ACKNOWLEDGED, ACK_STATUS_ALREADY_ACKNOWLEDGED
+from mqtt_alerts.models import ACK_STATUS_NOT_ACTIVE, ACK_STATUS_NOT_FOUND
+from mqtt_alerts.models import AcknowledgementResult, EvaluationResult, RuleKey
+from mqtt_alerts.notifications import (
+    NotificationDispatcher,
+    NotificationError,
+    TelegramBackend,
+)
+from mqtt_alerts.notifications import build_backends
 from mqtt_alerts.persistence import SQLiteStateStore
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -77,7 +83,9 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
                 keepalive=self.config.mqtt.keepalive,
             )
         except OSError as error:
-            raise ApplicationError(f"failed to connect to MQTT broker: {error}") from error
+            raise ApplicationError(
+                f"failed to connect to MQTT broker: {error}"
+            ) from error
 
         LOGGER.info(
             "connecting to MQTT broker at %s:%s",
@@ -87,6 +95,7 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
         try:
             while True:
                 self._reload_config_if_changed()
+                self._poll_notification_backends()
                 loop_result = client.loop(timeout=self._reload_interval_seconds)
                 if loop_result == mqtt.MQTT_ERR_SUCCESS:
                     continue
@@ -148,12 +157,13 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
             return
 
         self._deliver_notifications(result)
-        for key, state in result.state_updates.items():
-            self._state_store.save_state(key, state)
+        self._state_store.save_updates(result.state_updates, result.alert_updates)
 
     def _deliver_notifications(self, result: EvaluationResult) -> None:
         for notification in result.notifications:
-            key = RuleKey(sensor_id=notification.sensor_id, rule_id=notification.rule_id)
+            key = RuleKey(
+                sensor_id=notification.sensor_id, rule_id=notification.rule_id
+            )
             try:
                 self._dispatcher.send(notification)
                 LOGGER.info(
@@ -164,8 +174,44 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
                     notification.rule_id,
                 )
             except NotificationError as error:
-                _rollback_state_after_delivery_error(result, key, notification.kind)
+                _rollback_state_after_delivery_error(result, key)
                 LOGGER.error("notification delivery failed: %s", error)
+
+    def _poll_notification_backends(self) -> None:
+        now = datetime.now(timezone.utc)
+        for backend in self._telegram_backends():
+            if not backend.ready_to_poll(now):
+                continue
+            try:
+                interactions = backend.poll_interactions(now)
+            except NotificationError as error:
+                LOGGER.warning(
+                    "Telegram polling failed for backend %s: %s",
+                    backend.backend_id,
+                    error,
+                )
+                continue
+
+            for interaction in interactions:
+                result = self._engine.acknowledge_alert(
+                    interaction.alert_id,
+                    acknowledged_at=now,
+                    acknowledged_by=interaction.acknowledged_by,
+                )
+                if result.state_updates or result.alert_updates:
+                    self._state_store.save_updates(
+                        result.state_updates,
+                        result.alert_updates,
+                    )
+                _log_acknowledgement_result(result, interaction.alert_id)
+                try:
+                    backend.finalize_acknowledgement(interaction, result)
+                except NotificationError as error:
+                    LOGGER.warning(
+                        "Telegram acknowledgement finalization failed for backend %s: %s",
+                        backend.backend_id,
+                        error,
+                    )
 
     def _reload_config_if_changed(self) -> None:
         if self._config_path is None:
@@ -180,7 +226,9 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
             new_config = load_config(self._config_path)
         except ConfigError as error:
             self._config_mtime_ns = current_mtime_ns
-            LOGGER.error("config reload failed, keeping previous configuration: %s", error)
+            LOGGER.error(
+                "config reload failed, keeping previous configuration: %s", error
+            )
             return
 
         if new_config.mqtt != self.config.mqtt:
@@ -208,7 +256,9 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
         )
         self.config = new_config
         self._config_mtime_ns = current_mtime_ns
-        self._update_subscriptions(previous_topics, set(self._engine.subscribed_topics()))
+        self._update_subscriptions(
+            previous_topics, set(self._engine.subscribed_topics())
+        )
         LOGGER.info("reloaded configuration from %s", self._config_path)
 
     def _handle_loop_error(self, client: mqtt.Client, loop_result: int) -> None:
@@ -239,6 +289,13 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
             client.subscribe(topic)
             LOGGER.info("subscribed to %s", topic)
 
+    def _telegram_backends(self) -> list[TelegramBackend]:
+        return [
+            backend
+            for backend in self._dispatcher.backends.values()
+            if isinstance(backend, TelegramBackend)
+        ]
+
 
 def _decode_payload(raw_payload: bytes) -> dict[str, object]:
     payload = json.loads(raw_payload.decode("utf-8"))
@@ -247,15 +304,39 @@ def _decode_payload(raw_payload: bytes) -> dict[str, object]:
     return payload
 
 
-def _rollback_state_after_delivery_error(result: EvaluationResult, key: RuleKey, kind: str) -> None:
-    state = result.state_updates[key]
-    if kind == "recovery":
-        # Keep trigger state set so recovery can be retried.
-        state.alert_triggered = True
+def _rollback_state_after_delivery_error(
+    result: EvaluationResult, key: RuleKey
+) -> None:
+    previous_state = result.rollback_states.get(key)
+    if previous_state is None:
         return
-    state.alert_triggered = False
-    state.triggered_at = None
-    state.last_notification_at = None
+    result.state_updates[key] = previous_state
+    current_alert = previous_state.current_alert
+    if current_alert is not None:
+        result.alert_updates[current_alert.id] = current_alert.copy()
+
+
+def _log_acknowledgement_result(
+    result: AcknowledgementResult, alert_id: str
+) -> None:
+    alert = result.alert
+    if result.status == ACK_STATUS_ACKNOWLEDGED and alert is not None:
+        LOGGER.info(
+            "acknowledged alert id=%s sensor=%s rule=%s by=%s",
+            alert.id,
+            alert.sensor_id,
+            alert.rule_id,
+            alert.acknowledged_by or "unknown",
+        )
+        return
+    if result.status == ACK_STATUS_ALREADY_ACKNOWLEDGED:
+        LOGGER.info("alert id=%s was already acknowledged", alert_id)
+        return
+    if result.status == ACK_STATUS_NOT_ACTIVE:
+        LOGGER.info("alert id=%s is no longer active", alert_id)
+        return
+    if result.status == ACK_STATUS_NOT_FOUND:
+        LOGGER.info("alert id=%s was not found for acknowledgement", alert_id)
 
 
 def _read_config_mtime_ns(path: Path) -> int | None:

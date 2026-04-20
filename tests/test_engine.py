@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from mqtt_alerts.config import RuleConfig, SensorConfig
 from mqtt_alerts.engine import AlertEngine
+from mqtt_alerts.models import ACK_STATUS_ACKNOWLEDGED, ACK_STATUS_ALREADY_ACKNOWLEDGED
 from mqtt_alerts.models import RuleKey, RuleState
 from mqtt_alerts.persistence import SQLiteStateStore
 
@@ -362,9 +363,13 @@ def test_persistence_updates_only_when_durable_state_changes() -> None:
         observed_at=start + timedelta(minutes=16),
     )
 
-    assert list(first.state_updates) == [RuleKey(sensor_id="freezer_1", rule_id="high_warn")]
+    assert list(first.state_updates) == [
+        RuleKey(sensor_id="freezer_1", rule_id="high_warn")
+    ]
     assert not second.state_updates
-    assert list(third.state_updates) == [RuleKey(sensor_id="freezer_1", rule_id="high_warn")]
+    assert list(third.state_updates) == [
+        RuleKey(sensor_id="freezer_1", rule_id="high_warn")
+    ]
     assert not fourth.state_updates
 
 
@@ -408,6 +413,96 @@ def test_custom_messages_include_live_values() -> None:
         == "Custom alert text\nExceeded for: 15m\nCurrent value: 6.30"
     )
     assert recovered.notifications[0].message == "Recovered with value 4.70"
+
+
+def test_alert_instance_is_created_when_condition_becomes_active() -> None:
+    """Crossing into the active condition should create a pending alert instance."""
+    engine = AlertEngine((_build_sensor(),))
+    start = _utc(2025, 1, 1, 16, 0, 0)
+
+    result = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.0},
+        observed_at=start,
+    )
+
+    state = engine.state_for("freezer_1", "high_warn")
+    assert not result.notifications
+    assert state.current_alert is not None
+    assert state.current_alert.state == "pending"
+    assert state.current_alert.started_at == start
+
+
+def test_alert_acknowledgement_is_persistent_and_idempotent() -> None:
+    """Active alerts should move to acknowledged and duplicate acks should be harmless."""
+    engine = AlertEngine((_build_sensor(),))
+    start = _utc(2025, 1, 1, 16, 10, 0)
+
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.0},
+        observed_at=start,
+    )
+    fired = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.2},
+        observed_at=start + timedelta(minutes=15),
+    )
+    alert_id = fired.notifications[0].alert_id
+
+    first = engine.acknowledge_alert(
+        alert_id,
+        acknowledged_at=start + timedelta(minutes=16),
+        acknowledged_by="@alice",
+    )
+    second = engine.acknowledge_alert(
+        alert_id,
+        acknowledged_at=start + timedelta(minutes=17),
+        acknowledged_by="@alice",
+    )
+
+    assert first.status == ACK_STATUS_ACKNOWLEDGED
+    assert first.alert is not None
+    assert first.alert.state == "acknowledged"
+    assert first.alert.acknowledged_by == "@alice"
+    assert second.status == ACK_STATUS_ALREADY_ACKNOWLEDGED
+    assert engine.state_for("freezer_1", "high_warn").current_alert is not None
+    assert (
+        engine.state_for("freezer_1", "high_warn").current_alert.state == "acknowledged"
+    )
+
+
+def test_recovery_still_happens_after_acknowledgement() -> None:
+    """Acknowledging an alert should not resolve it or suppress the later recovery event."""
+    engine = AlertEngine((_build_sensor(),))
+    start = _utc(2025, 1, 1, 16, 30, 0)
+
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.0},
+        observed_at=start,
+    )
+    fired = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.1},
+        observed_at=start + timedelta(minutes=15),
+    )
+    engine.acknowledge_alert(
+        fired.notifications[0].alert_id,
+        acknowledged_at=start + timedelta(minutes=16),
+        acknowledged_by="@alice",
+    )
+
+    recovered = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 4.8},
+        observed_at=start + timedelta(minutes=17),
+    )
+
+    assert len(recovered.notifications) == 1
+    assert recovered.notifications[0].kind == "recovery"
+    assert recovered.notifications[0].acknowledged_by == "@alice"
+    assert engine.state_for("freezer_1", "high_warn").current_alert is None
 
 
 def _build_sensor(rules: tuple[RuleConfig, ...] | None = None) -> SensorConfig:
