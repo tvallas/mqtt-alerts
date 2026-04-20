@@ -67,6 +67,8 @@ Environment variables:
 - `MQTT_ALERTS_DEBUG`
 - `MQTT_ALERTS_QUIET`
 
+The process polls the config file and applies sensor, rule, backend, and topic changes automatically. Changes to MQTT connection settings or the SQLite database path still require a restart.
+
 ## Configuration
 
 The configuration is YAML and keeps MQTT input, persisted state, sensors and rules, and notification backends separate.
