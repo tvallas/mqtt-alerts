@@ -53,6 +53,17 @@ class NtfyBackendConfig(NotificationBackendConfig):
 
 
 @dataclass(frozen=True)
+class TelegramBackendConfig(NotificationBackendConfig):
+    """Configuration for the Telegram backend."""
+
+    bot_token: str
+    chat_id: str
+    polling_enabled: bool = True
+    polling_timeout_seconds: int = 1
+    polling_interval_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
 class RuleConfig:  # pylint: disable=too-many-instance-attributes
     """One alert rule attached to a sensor."""
 
@@ -98,7 +109,9 @@ def load_config(path: str | Path) -> AppConfig:
     try:
         raw_text = config_path.read_text(encoding="utf-8")
     except OSError as error:
-        raise ConfigError(f"failed to read config file {config_path}: {error}") from error
+        raise ConfigError(
+            f"failed to read config file {config_path}: {error}"
+        ) from error
 
     try:
         payload = yaml.safe_load(raw_text) or {}
@@ -157,7 +170,9 @@ def _load_notification_backends(raw_value: Any) -> list[NotificationBackendConfi
     seen_ids: set[str] = set()
     for index, item in enumerate(raw_backends):
         entry = _require_mapping(item, f"notifications.backends[{index}]")
-        backend_id = _require_string(entry.get("id"), f"notifications.backends[{index}].id")
+        backend_id = _require_string(
+            entry.get("id"), f"notifications.backends[{index}].id"
+        )
         if backend_id in seen_ids:
             raise ConfigError(f"duplicate notification backend id {backend_id!r}")
         seen_ids.add(backend_id)
@@ -165,22 +180,55 @@ def _load_notification_backends(raw_value: Any) -> list[NotificationBackendConfi
         backend_type = _require_string(
             entry.get("type"), f"notifications.backends[{index}].type"
         )
-        if backend_type != "ntfy":
-            raise ConfigError(
-                f"unsupported backend type {backend_type!r}; only 'ntfy' is implemented"
+        if backend_type == "ntfy":
+            backends.append(
+                NtfyBackendConfig(
+                    id=backend_id,
+                    type=backend_type,
+                    server=_require_string(
+                        entry.get("server"), f"notifications.backends[{index}].server"
+                    ),
+                    topic=_require_string(
+                        entry.get("topic"), f"notifications.backends[{index}].topic"
+                    ),
+                )
             )
+            continue
 
-        backends.append(
-            NtfyBackendConfig(
-                id=backend_id,
-                type=backend_type,
-                server=_require_string(
-                    entry.get("server"), f"notifications.backends[{index}].server"
-                ),
-                topic=_require_string(
-                    entry.get("topic"), f"notifications.backends[{index}].topic"
-                ),
+        if backend_type == "telegram":
+            backends.append(
+                TelegramBackendConfig(
+                    id=backend_id,
+                    type=backend_type,
+                    bot_token=_require_string(
+                        entry.get("bot_token"),
+                        f"notifications.backends[{index}].bot_token",
+                    ),
+                    chat_id=_coerce_chat_id(
+                        entry.get("chat_id"),
+                        f"notifications.backends[{index}].chat_id",
+                    ),
+                    polling_enabled=_coerce_bool(
+                        entry.get("polling_enabled", True),
+                        f"notifications.backends[{index}].polling_enabled",
+                    ),
+                    polling_timeout_seconds=_coerce_non_negative_int(
+                        entry.get("polling_timeout_seconds", 1),
+                        ("notifications.backends" f"[{index}].polling_timeout_seconds"),
+                    ),
+                    polling_interval_seconds=_coerce_non_negative_float(
+                        entry.get("polling_interval_seconds", 0.0),
+                        (
+                            "notifications.backends"
+                            f"[{index}].polling_interval_seconds"
+                        ),
+                    ),
+                )
             )
+            continue
+
+        raise ConfigError(
+            f"unsupported backend type {backend_type!r}; expected 'ntfy' or 'telegram'"
         )
     return backends
 
@@ -231,7 +279,9 @@ def _load_rules(sensor_id: str, raw_value: Any) -> list[RuleConfig]:
     seen_rule_ids: set[str] = set()
     for index, item in enumerate(raw_value):
         entry = _require_mapping(item, f"sensor {sensor_id} rules[{index}]")
-        rule_id = _require_string(entry.get("id"), f"sensor {sensor_id} rules[{index}].id")
+        rule_id = _require_string(
+            entry.get("id"), f"sensor {sensor_id} rules[{index}].id"
+        )
         if rule_id in seen_rule_ids:
             raise ConfigError(f"duplicate rule id {rule_id!r} for sensor {sensor_id!r}")
         seen_rule_ids.add(rule_id)
@@ -263,7 +313,8 @@ def _load_rules(sensor_id: str, raw_value: Any) -> list[RuleConfig]:
                 id=rule_id,
                 direction=direction,
                 threshold=_coerce_float(
-                    entry.get("threshold"), f"sensor {sensor_id} rules[{index}].threshold"
+                    entry.get("threshold"),
+                    f"sensor {sensor_id} rules[{index}].threshold",
                 ),
                 hysteresis=_coerce_non_negative_float(
                     entry.get("hysteresis", 0.0),
@@ -277,7 +328,8 @@ def _load_rules(sensor_id: str, raw_value: Any) -> list[RuleConfig]:
                     entry.get("backend"), f"sensor {sensor_id} rules[{index}].backend"
                 ),
                 enabled=_coerce_bool(
-                    entry.get("enabled", True), f"sensor {sensor_id} rules[{index}].enabled"
+                    entry.get("enabled", True),
+                    f"sensor {sensor_id} rules[{index}].enabled",
                 ),
                 title=_optional_string(
                     entry.get("title"), f"sensor {sensor_id} rules[{index}].title"
@@ -326,6 +378,13 @@ def _coerce_int(value: Any, field_name: str) -> int:
     return value
 
 
+def _coerce_non_negative_int(value: Any, field_name: str) -> int:
+    result = _coerce_int(value, field_name)
+    if result < 0:
+        raise ConfigError(f"{field_name} must be greater than or equal to zero")
+    return result
+
+
 def _coerce_float(value: Any, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{field_name} must be numeric")
@@ -345,6 +404,14 @@ def _coerce_bool(value: Any, field_name: str) -> bool:
     return value
 
 
+def _coerce_chat_id(value: Any, field_name: str) -> str:
+    if isinstance(value, bool):
+        raise ConfigError(f"{field_name} must be a string or integer")
+    if isinstance(value, int):
+        return str(value)
+    return _require_string(value, field_name)
+
+
 def _normalize_optional_topic_prefix(value: Any) -> str | None:
     if value is None:
         return None
@@ -356,6 +423,8 @@ def _resolve_topic(topic_prefix: str | None, topic: str) -> str:
     normalized_topic = topic.strip("/")
     if topic_prefix is None:
         return normalized_topic
-    if normalized_topic == topic_prefix or normalized_topic.startswith(f"{topic_prefix}/"):
+    if normalized_topic == topic_prefix or normalized_topic.startswith(
+        f"{topic_prefix}/"
+    ):
         return normalized_topic
     return f"{topic_prefix}/{normalized_topic}"

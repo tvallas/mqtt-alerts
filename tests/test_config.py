@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from mqtt_alerts.config import ConfigError, NtfyBackendConfig, load_config
+from mqtt_alerts.config import (
+    ConfigError,
+    NtfyBackendConfig,
+    TelegramBackendConfig,
+    load_config,
+)
 
 
 def test_load_config_supports_multiple_rules_and_topic_prefix(tmp_path: Path) -> None:
@@ -135,3 +140,46 @@ sensors:
     config = load_config(config_path)
 
     assert config.sensors[0].rules[0].hysteresis == 0.5
+
+
+def test_load_config_supports_telegram_backend(tmp_path: Path) -> None:
+    """Telegram backend config should parse polling settings and numeric chat ids."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+mqtt:
+  host: localhost
+
+notifications:
+  backends:
+    - id: main_telegram
+      type: telegram
+      bot_token: 123456:secret
+      chat_id: -100123456
+      polling_enabled: true
+      polling_timeout_seconds: 3
+      polling_interval_seconds: 0.5
+
+sensors:
+  - id: freezer_1
+    topic: measurements/freezer1
+    value_field: temperature
+    rules:
+      - id: high_warn
+        direction: above
+        threshold: 5.0
+        for: 15m
+        severity: low
+        backend: main_telegram
+        enabled: true
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    backend = config.notification_backends[0]
+    assert isinstance(backend, TelegramBackendConfig)
+    assert backend.chat_id == "-100123456"
+    assert backend.polling_timeout_seconds == 3
+    assert backend.polling_interval_seconds == 0.5
