@@ -98,7 +98,7 @@ class MqttAlertsApp:
         reason_code: mqtt.ReasonCode,
         _properties: mqtt.Properties | None = None,
     ) -> None:
-        if int(reason_code) != 0:
+        if reason_code.is_failure:
             LOGGER.error("MQTT connection failed with reason code %s", reason_code)
             return
 
@@ -133,13 +133,14 @@ class MqttAlertsApp:
             try:
                 self._dispatcher.send(notification)
                 LOGGER.info(
-                    "sent %s notification for sensor=%s rule=%s",
+                    "sent %s %s notification for sensor=%s rule=%s",
+                    notification.kind,
                     notification.severity,
                     notification.sensor_id,
                     notification.rule_id,
                 )
             except NotificationError as error:
-                _rollback_trigger_state(result, key)
+                _rollback_state_after_delivery_error(result, key, notification.kind)
                 LOGGER.error("notification delivery failed: %s", error)
 
 
@@ -150,8 +151,12 @@ def _decode_payload(raw_payload: bytes) -> dict[str, object]:
     return payload
 
 
-def _rollback_trigger_state(result: EvaluationResult, key: RuleKey) -> None:
+def _rollback_state_after_delivery_error(result: EvaluationResult, key: RuleKey, kind: str) -> None:
     state = result.state_updates[key]
+    if kind == "recovery":
+        # Keep trigger state set so recovery can be retried.
+        state.alert_triggered = True
+        return
     state.alert_triggered = False
     state.triggered_at = None
     state.last_notification_at = None
