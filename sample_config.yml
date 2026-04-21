@@ -40,6 +40,12 @@ sensors:
         recovery_enabled: true
         recovery_title: Freezer 1 recovered
         recovery_message: Temperature is back within range
+        reminders:
+          enabled: true
+          initial_delay: 5m
+          multiplier: 2.0
+          max_interval: 1h
+          stop_after: 24h
 
       - id: high_critical
         direction: above
