@@ -450,7 +450,7 @@ wheels = [
 
 [[package]]
 name = "mqtt-alerts"
-version = "0.0.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "paho-mqtt" },
