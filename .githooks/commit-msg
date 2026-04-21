@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+exec python3 "$repo_root/scripts/check_conventional_commits.py" \
+  --commit-msg-file "$1" \
+  --allow-merge
