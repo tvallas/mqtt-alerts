@@ -4,8 +4,8 @@
 [![Docker](https://github.com/tvallas/mqtt-alerts/actions/workflows/docker.yml/badge.svg)](https://github.com/tvallas/mqtt-alerts/actions/workflows/docker.yml)
 [![Trivy](https://github.com/tvallas/mqtt-alerts/actions/workflows/trivy.yml/badge.svg)](https://github.com/tvallas/mqtt-alerts/actions/workflows/trivy.yml)
 [![PyPI version](https://img.shields.io/pypi/v/mqtt-alerts.svg)](https://pypi.org/project/mqtt-alerts/)
-[![Python versions](https://img.shields.io/pypi/pyversions/mqtt-alerts.svg)](https://pypi.org/project/mqtt-alerts/)
-[![License](https://img.shields.io/github/license/tvallas/mqtt-alerts.svg)](LICENSE)
+[![Python 3.10-3.13](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/tvallas/mqtt-alerts/blob/master/pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 <p align="center">
   <img src="docs/assets/mqtt-alerts.png" alt="mqtt-alerts logo" width="220" />
