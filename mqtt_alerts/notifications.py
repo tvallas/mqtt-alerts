@@ -45,6 +45,15 @@ class TelegramInteraction:
     message_text: str | None
 
 
+@dataclass(frozen=True)
+class TelegramSentMessage:
+    """One Telegram message sent for an active alert."""
+
+    chat_id: str
+    message_id: int
+    text: str | None
+
+
 class NotificationDispatcher:  # pylint: disable=too-few-public-methods
     """Route notifications to the configured backend implementation."""
 
@@ -110,6 +119,8 @@ class TelegramBackend:  # pylint: disable=too-many-instance-attributes
         self._opener = opener
         self._next_update_id: int | None = None
         self._next_poll_at: datetime | None = None
+        self._alert_messages: dict[str, list[TelegramSentMessage]] = {}
+        self._seen_callback_query_ids: set[str] = set()
 
     @property
     def backend_id(self) -> str:
@@ -130,11 +141,12 @@ class TelegramBackend:  # pylint: disable=too-many-instance-attributes
 
     def send(self, notification: Notification) -> None:
         """Send one alert or recovery message to the configured Telegram chat."""
+        message_text = _build_telegram_message_text(notification)
         payload: dict[str, Any] = {
             "chat_id": self._config.chat_id,
-            "text": _build_telegram_message_text(notification),
+            "text": message_text,
         }
-        if notification.kind == "alert":
+        if notification.kind in {"alert", "reminder"}:
             payload["reply_markup"] = {
                 "inline_keyboard": [
                     [
@@ -147,7 +159,13 @@ class TelegramBackend:  # pylint: disable=too-many-instance-attributes
                     ]
                 ]
             }
-        self._request_json("sendMessage", payload, timeout=10)
+        response = self._request_json("sendMessage", payload, timeout=10)
+        if notification.kind in {"alert", "reminder"}:
+            self._remember_alert_message(
+                notification.alert_id,
+                response,
+                message_text,
+            )
 
     def poll_interactions(
         self, now: datetime | None = None
@@ -186,8 +204,12 @@ class TelegramBackend:  # pylint: disable=too-many-instance-attributes
                     else max(max_update_id, update_id)
                 )
             interaction = _parse_telegram_interaction(self._config.id, update)
-            if interaction is not None:
-                interactions.append(interaction)
+            if interaction is None:
+                continue
+            if interaction.callback_query_id in self._seen_callback_query_ids:
+                continue
+            self._seen_callback_query_ids.add(interaction.callback_query_id)
+            interactions.append(interaction)
         if max_update_id is not None:
             self._next_update_id = max_update_id + 1
         return interactions
@@ -198,42 +220,28 @@ class TelegramBackend:  # pylint: disable=too-many-instance-attributes
         result: AcknowledgementResult,
     ) -> None:
         """Answer the callback query and update the Telegram message when practical."""
-        self._request_json(
-            "answerCallbackQuery",
-            {
-                "callback_query_id": interaction.callback_query_id,
-                "text": _build_callback_answer_text(result),
-            },
-            timeout=10,
-        )
+        try:
+            self._request_json(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": interaction.callback_query_id,
+                    "text": _build_callback_answer_text(result),
+                },
+                timeout=10,
+            )
+        except NotificationError:
+            pass
 
-        if result.status != ACK_STATUS_ACKNOWLEDGED:
-            return
-        if interaction.chat_id is None or interaction.message_id is None:
+        if result.status not in {
+            ACK_STATUS_ACKNOWLEDGED,
+            ACK_STATUS_ALREADY_ACKNOWLEDGED,
+        }:
             return
         if result.alert is None:
             return
 
-        edit_payload: dict[str, Any] = {
-            "chat_id": interaction.chat_id,
-            "message_id": interaction.message_id,
-            "reply_markup": {"inline_keyboard": []},
-        }
-        if interaction.message_text is not None:
-            edit_payload["text"] = _append_acknowledgement_note(
-                interaction.message_text,
-                result.alert,
-            )
-            try:
-                self._request_json("editMessageText", edit_payload, timeout=10)
-                return
-            except NotificationError:
-                pass
-
-        try:
-            self._request_json("editMessageReplyMarkup", edit_payload, timeout=10)
-        except NotificationError:
-            pass
+        for message in self._messages_to_update_after_ack(interaction):
+            self._update_acknowledged_message(message, result.alert)
 
     def _request_json(
         self,
@@ -271,6 +279,68 @@ class TelegramBackend:  # pylint: disable=too-many-instance-attributes
                 f"{body.get('description', 'unknown error')}"
             )
         return body
+
+    def _remember_alert_message(
+        self,
+        alert_id: str,
+        response: dict[str, Any],
+        message_text: str,
+    ) -> None:
+        result = response.get("result")
+        if not isinstance(result, dict):
+            return
+        message_id = result.get("message_id")
+        if not isinstance(message_id, int):
+            return
+        self._alert_messages.setdefault(alert_id, []).append(
+            TelegramSentMessage(
+                chat_id=self._config.chat_id,
+                message_id=message_id,
+                text=message_text,
+            )
+        )
+
+    def _messages_to_update_after_ack(
+        self,
+        interaction: TelegramInteraction,
+    ) -> list[TelegramSentMessage]:
+        messages = self._alert_messages.pop(interaction.alert_id, [])
+        if interaction.chat_id is not None and interaction.message_id is not None:
+            messages.append(
+                TelegramSentMessage(
+                    chat_id=interaction.chat_id,
+                    message_id=interaction.message_id,
+                    text=interaction.message_text,
+                )
+            )
+
+        deduplicated: dict[tuple[str, int], TelegramSentMessage] = {}
+        for message in messages:
+            deduplicated[(message.chat_id, message.message_id)] = message
+        return list(deduplicated.values())
+
+    def _update_acknowledged_message(
+        self,
+        message: TelegramSentMessage,
+        alert: AlertInstance,
+    ) -> None:
+        edit_payload: dict[str, Any] = {
+            "chat_id": message.chat_id,
+            "message_id": message.message_id,
+            "reply_markup": {"inline_keyboard": []},
+        }
+        if message.text is not None:
+            edit_payload["text"] = _append_acknowledgement_note(message.text, alert)
+            try:
+                self._request_json("editMessageText", edit_payload, timeout=10)
+                return
+            except NotificationError:
+                pass
+
+        try:
+            self._request_json("editMessageReplyMarkup", edit_payload, timeout=10)
+        except NotificationError:
+            pass
 
 
 def build_backends(
@@ -435,6 +505,9 @@ def _build_callback_answer_text(  # pylint: disable=too-many-return-statements
 
 
 def _append_acknowledgement_note(message_text: str, alert: AlertInstance) -> str:
+    if "Acknowledged by " in message_text:
+        return message_text
+
     actor = alert.acknowledged_by or "unknown user"
     if alert.acknowledged_at is None:
         return f"{message_text}\n\nAcknowledged by {actor}"

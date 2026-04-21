@@ -147,6 +147,31 @@ def test_telegram_backend_builds_alert_message_with_ack_button() -> None:
     )
     assert captured["timeout"] == 10
 
+    backend.send(
+        Notification(
+            kind="reminder",
+            alert_id="abc123",
+            alert_state="firing",
+            backend_id="main_telegram",
+            sensor_id="freezer_1",
+            sensor_name="Freezer 1",
+            sensor_topic="measurements/freezer1",
+            rule_id="high_warn",
+            severity="warning",
+            title="Reminder 1: Freezer 1 warning",
+            message="Temperature is still above limit",
+            value=6.3,
+            threshold=5.0,
+            direction="above",
+            occurred_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+
+    assert (
+        captured["payload"]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        == "ack:abc123"
+    )
+
 
 def test_telegram_callback_payload_round_trips() -> None:
     """Alert ids should survive the compact Telegram callback encoding."""
@@ -229,6 +254,67 @@ def test_telegram_backend_polls_callback_queries_and_tracks_offset() -> None:
     assert requests[1]["payload"]["offset"] == 18
 
 
+def test_telegram_backend_ignores_duplicate_callback_queries() -> None:
+    """Repeated callback ids should not be processed more than once."""
+    requests = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(self._body).encode("utf-8")
+
+    duplicate_update = {
+        "callback_query": {
+            "id": "callback-1",
+            "data": "ack:alert-123",
+            "from": {"id": 77, "username": "alice"},
+            "message": {
+                "message_id": 55,
+                "text": "Freezer 1 warning\n\nTemperature is above limit",
+                "chat": {"id": -1001},
+            },
+        },
+    }
+    responses = [
+        {"ok": True, "result": [{"update_id": 17, **duplicate_update}]},
+        {"ok": True, "result": [{"update_id": 18, **duplicate_update}]},
+    ]
+
+    def fake_open(request, timeout):
+        requests.append(
+            {
+                "url": request.full_url,
+                "payload": json.loads(request.data.decode("utf-8")),
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse(responses.pop(0))
+
+    backend = TelegramBackend(
+        TelegramBackendConfig(
+            id="main_telegram",
+            type="telegram",
+            bot_token="123:token",
+            chat_id="-100123",
+        ),
+        opener=fake_open,
+    )
+
+    first = backend.poll_interactions()
+    second = backend.poll_interactions()
+
+    assert len(first) == 1
+    assert second == []
+
+
 def test_telegram_backend_answers_callback_and_edits_message_after_ack() -> None:
     """Successful acknowledgements should answer the callback and update the message."""
     requests = []
@@ -301,3 +387,183 @@ def test_telegram_backend_answers_callback_and_edits_message_after_ack() -> None
         "Acknowledged by @alice at 2025-01-01 10:16:00Z"
         in requests[1]["payload"]["text"]
     )
+
+
+def test_telegram_backend_still_edits_message_when_callback_answer_fails() -> None:
+    """Telegram may reject stale callback answers, but message edits are still useful."""
+    requests = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(self._body).encode("utf-8")
+
+    def fake_open(request, timeout):
+        requests.append(
+            {
+                "url": request.full_url,
+                "payload": json.loads(request.data.decode("utf-8")),
+                "timeout": timeout,
+            }
+        )
+        if request.full_url.endswith("/answerCallbackQuery"):
+            return FakeResponse({"ok": False, "description": "Bad Request"})
+        return FakeResponse({"ok": True, "result": True})
+
+    backend = TelegramBackend(
+        TelegramBackendConfig(
+            id="main_telegram",
+            type="telegram",
+            bot_token="123:token",
+            chat_id="-100123",
+        ),
+        opener=fake_open,
+    )
+
+    backend.finalize_acknowledgement(
+        TelegramInteraction(
+            backend_id="main_telegram",
+            callback_query_id="callback-1",
+            alert_id="alert-123",
+            acknowledged_by="@alice",
+            chat_id="-100123",
+            message_id=55,
+            message_text="Freezer 1 warning\n\nTemperature is above limit",
+        ),
+        AcknowledgementResult(
+            status=ACK_STATUS_ACKNOWLEDGED,
+            alert=AlertInstance(
+                id="alert-123",
+                sensor_id="freezer_1",
+                sensor_name="Freezer 1",
+                sensor_topic="measurements/freezer1",
+                rule_id="high_warn",
+                severity="warning",
+                backend_id="main_telegram",
+                threshold=5.0,
+                direction="above",
+                started_at=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc),
+                state="acknowledged",
+                triggered_at=datetime(2025, 1, 1, 10, 15, tzinfo=timezone.utc),
+                acknowledged_at=datetime(2025, 1, 1, 10, 16, tzinfo=timezone.utc),
+                acknowledged_by="@alice",
+            ),
+        ),
+    )
+
+    assert requests[0]["url"].endswith("/answerCallbackQuery")
+    assert requests[1]["url"].endswith("/editMessageText")
+
+
+def test_telegram_backend_updates_all_known_messages_after_ack() -> None:
+    """Acknowledging one alert message should remove buttons from later reminders."""
+    requests = []
+    next_message_id = 100
+
+    class FakeResponse:
+        def __init__(self, body):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(self._body).encode("utf-8")
+
+    def fake_open(request, timeout):
+        nonlocal next_message_id
+        payload = json.loads(request.data.decode("utf-8"))
+        requests.append(
+            {
+                "url": request.full_url,
+                "payload": payload,
+                "timeout": timeout,
+            }
+        )
+        if request.full_url.endswith("/sendMessage"):
+            next_message_id += 1
+            return FakeResponse({"ok": True, "result": {"message_id": next_message_id}})
+        return FakeResponse({"ok": True, "result": True})
+
+    backend = TelegramBackend(
+        TelegramBackendConfig(
+            id="main_telegram",
+            type="telegram",
+            bot_token="123:token",
+            chat_id="-100123",
+        ),
+        opener=fake_open,
+    )
+    alert = AlertInstance(
+        id="alert-123",
+        sensor_id="freezer_1",
+        sensor_name="Freezer 1",
+        sensor_topic="measurements/freezer1",
+        rule_id="high_warn",
+        severity="warning",
+        backend_id="main_telegram",
+        threshold=5.0,
+        direction="above",
+        started_at=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc),
+        state="acknowledged",
+        triggered_at=datetime(2025, 1, 1, 10, 15, tzinfo=timezone.utc),
+        acknowledged_at=datetime(2025, 1, 1, 10, 16, tzinfo=timezone.utc),
+        acknowledged_by="@alice",
+    )
+
+    for kind, title in (
+        ("alert", "Freezer 1 warning"),
+        ("reminder", "Reminder 1: Freezer 1 warning"),
+    ):
+        backend.send(
+            Notification(
+                kind=kind,
+                alert_id="alert-123",
+                alert_state="firing",
+                backend_id="main_telegram",
+                sensor_id="freezer_1",
+                sensor_name="Freezer 1",
+                sensor_topic="measurements/freezer1",
+                rule_id="high_warn",
+                severity="warning",
+                title=title,
+                message="Temperature is above limit",
+                value=6.3,
+                threshold=5.0,
+                direction="above",
+                occurred_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+
+    backend.finalize_acknowledgement(
+        TelegramInteraction(
+            backend_id="main_telegram",
+            callback_query_id="callback-1",
+            alert_id="alert-123",
+            acknowledged_by="@alice",
+            chat_id="-100123",
+            message_id=101,
+            message_text="Freezer 1 warning\n\nTemperature is above limit",
+        ),
+        AcknowledgementResult(status=ACK_STATUS_ACKNOWLEDGED, alert=alert),
+    )
+
+    edits = [
+        request for request in requests if request["url"].endswith("/editMessageText")
+    ]
+    assert [edit["payload"]["message_id"] for edit in edits] == [101, 102]
+    assert all(
+        edit["payload"]["reply_markup"] == {"inline_keyboard": []} for edit in edits
+    )
+    assert all("Acknowledged by @alice" in edit["payload"]["text"] for edit in edits)

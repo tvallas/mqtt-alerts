@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -64,6 +64,17 @@ class TelegramBackendConfig(NotificationBackendConfig):
 
 
 @dataclass(frozen=True)
+class ReminderConfig:
+    """Repeated alert delivery settings for unacknowledged alerts."""
+
+    enabled: bool = False
+    initial_delay: timedelta = timedelta(minutes=5)
+    multiplier: float = 2.0
+    max_interval: timedelta = timedelta(hours=1)
+    stop_after: timedelta = timedelta(hours=24)
+
+
+@dataclass(frozen=True)
 class RuleConfig:  # pylint: disable=too-many-instance-attributes
     """One alert rule attached to a sensor."""
 
@@ -80,6 +91,7 @@ class RuleConfig:  # pylint: disable=too-many-instance-attributes
     recovery_enabled: bool = True
     recovery_title: str | None = None
     recovery_message: str | None = None
+    reminders: ReminderConfig = field(default_factory=ReminderConfig)
 
 
 @dataclass(frozen=True)
@@ -125,12 +137,18 @@ def load_config(path: str | Path) -> AppConfig:
     sensors = _load_sensors(data.get("sensors"), mqtt.topic_prefix)
 
     backend_ids = {backend.id for backend in backends}
+    backend_types = {backend.id: backend.type for backend in backends}
     for sensor in sensors:
         for rule in sensor.rules:
             if rule.backend not in backend_ids:
                 raise ConfigError(
                     f"sensor {sensor.id!r} rule {rule.id!r} references unknown backend "
                     f"{rule.backend!r}"
+                )
+            if rule.reminders.enabled and backend_types[rule.backend] != "telegram":
+                raise ConfigError(
+                    f"sensor {sensor.id!r} rule {rule.id!r} enables reminders, "
+                    "but reminders require a telegram backend"
                 )
 
     return AppConfig(
@@ -349,9 +367,46 @@ def _load_rules(sensor_id: str, raw_value: Any) -> list[RuleConfig]:
                     entry.get("recovery_message"),
                     f"sensor {sensor_id} rules[{index}].recovery_message",
                 ),
+                reminders=_load_reminder_config(
+                    entry.get("reminders"),
+                    f"sensor {sensor_id} rules[{index}].reminders",
+                ),
             )
         )
     return rules
+
+
+def _load_reminder_config(raw_value: Any, field_name: str) -> ReminderConfig:
+    if raw_value is None:
+        return ReminderConfig()
+
+    data = _require_mapping(raw_value, field_name)
+    enabled = _coerce_bool(data.get("enabled", True), f"{field_name}.enabled")
+    initial_delay = _parse_config_duration(
+        data.get("initial_delay", "5m"), f"{field_name}.initial_delay"
+    )
+    multiplier = _coerce_float(data.get("multiplier", 2.0), f"{field_name}.multiplier")
+    max_interval = _parse_config_duration(
+        data.get("max_interval", "1h"), f"{field_name}.max_interval"
+    )
+    stop_after = _parse_config_duration(
+        data.get("stop_after", "24h"), f"{field_name}.stop_after"
+    )
+    if initial_delay <= timedelta(0):
+        raise ConfigError(f"{field_name}.initial_delay must be greater than zero")
+    if multiplier < 1.0:
+        raise ConfigError(f"{field_name}.multiplier must be greater than or equal to 1")
+    if max_interval <= timedelta(0):
+        raise ConfigError(f"{field_name}.max_interval must be greater than zero")
+    if stop_after <= timedelta(0):
+        raise ConfigError(f"{field_name}.stop_after must be greater than zero")
+    return ReminderConfig(
+        enabled=enabled,
+        initial_delay=initial_delay,
+        multiplier=multiplier,
+        max_interval=max_interval,
+        stop_after=stop_after,
+    )
 
 
 def _require_mapping(value: Any, field_name: str) -> dict[str, Any]:
@@ -402,6 +457,13 @@ def _coerce_bool(value: Any, field_name: str) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"{field_name} must be a boolean")
     return value
+
+
+def _parse_config_duration(value: Any, field_name: str) -> timedelta:
+    try:
+        return parse_duration(_require_string(value, field_name))
+    except ValueError as error:
+        raise ConfigError(f"{field_name} has invalid duration: {error}") from error
 
 
 def _coerce_chat_id(value: Any, field_name: str) -> str:

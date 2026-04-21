@@ -34,6 +34,7 @@ class SQLiteStateStore:
               rs.alert_triggered,
               rs.triggered_at,
               rs.last_notification_at,
+              rs.reminder_count,
               ai.id AS alert_id,
               ai.sensor_name AS alert_sensor_name,
               ai.sensor_topic AS alert_sensor_topic,
@@ -62,6 +63,7 @@ class SQLiteStateStore:
                 alert_triggered=bool(row["alert_triggered"]),
                 triggered_at=_parse_datetime(row["triggered_at"]),
                 last_notification_at=_parse_datetime(row["last_notification_at"]),
+                reminder_count=row["reminder_count"],
                 current_alert=_parse_alert_instance_row(row),
             )
         return states
@@ -148,8 +150,9 @@ class SQLiteStateStore:
                       alert_triggered,
                       triggered_at,
                       last_notification_at,
+                      reminder_count,
                       active_alert_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(sensor_id, rule_id) DO UPDATE SET
                       latest_value = excluded.latest_value,
                       latest_seen_at = excluded.latest_seen_at,
@@ -158,6 +161,7 @@ class SQLiteStateStore:
                       alert_triggered = excluded.alert_triggered,
                       triggered_at = excluded.triggered_at,
                       last_notification_at = excluded.last_notification_at,
+                      reminder_count = excluded.reminder_count,
                       active_alert_id = excluded.active_alert_id
                     """,
                     (
@@ -170,6 +174,7 @@ class SQLiteStateStore:
                         int(state.alert_triggered),
                         _serialize_datetime(state.triggered_at),
                         _serialize_datetime(state.last_notification_at),
+                        state.reminder_count,
                         active_alert_id,
                     ),
                 )
@@ -190,10 +195,14 @@ class SQLiteStateStore:
               alert_triggered INTEGER NOT NULL,
               triggered_at TEXT,
               last_notification_at TEXT,
+              reminder_count INTEGER NOT NULL DEFAULT 0,
               PRIMARY KEY(sensor_id, rule_id)
             )
             """)
         self._ensure_column("rule_state", "active_alert_id", "TEXT")
+        self._ensure_column(
+            "rule_state", "reminder_count", "INTEGER NOT NULL DEFAULT 0"
+        )
         self._connection.execute("""
             CREATE TABLE IF NOT EXISTS alert_instance (
               id TEXT PRIMARY KEY,

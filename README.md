@@ -136,6 +136,12 @@ sensors:
         recovery_enabled: true
         recovery_title: Freezer 1 recovered
         recovery_message: Temperature is back within range
+        reminders:
+          enabled: true
+          initial_delay: 5m
+          multiplier: 2.0
+          max_interval: 1h
+          stop_after: 24h
 
       - id: high_critical
         direction: above
@@ -153,6 +159,7 @@ Notes:
 - each rule has its own severity, backend, timing, and enabled flag
 - each rule can define `hysteresis` to avoid alert/recovery flapping near the threshold
 - each rule can customize automatic recovery messages (`recovery_enabled`, `recovery_title`, `recovery_message`)
+- Telegram rules can opt into acknowledgement reminders with `reminders`; reminders repeat until acknowledgement, recovery, or `stop_after`
 - state is tracked per `(sensor_id, rule_id)` pair, while alert instances are tracked separately for each firing period
 - Telegram `chat_id` may be a numeric id such as `-100...` for groups
 
@@ -171,6 +178,21 @@ Practical conclusions:
 
 - `ntfy` is a good outbound notification backend, but it is not the primary interactive acknowledgement channel for this architecture.
 - Telegram works well here because `mqtt-alerts` can poll outward to the Telegram Bot API and receive button presses without exposing a webhook endpoint.
+
+### Telegram alert reminders
+
+Rules that use a Telegram backend can send repeated alert reminders until the active alert is acknowledged. A rule opts in with:
+
+```yaml
+reminders:
+  enabled: true
+  initial_delay: 5m
+  multiplier: 2.0
+  max_interval: 1h
+  stop_after: 24h
+```
+
+With those defaults, the first reminder is sent 5 minutes after the initial alert, then 10 minutes later, then 20 minutes later, up to one reminder per hour. Reminder delivery stops when the alert is acknowledged, when the condition recovers, or 24 hours after the initial alert notification.
 
 ## Telegram Setup
 

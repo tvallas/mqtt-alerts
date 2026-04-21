@@ -183,3 +183,86 @@ sensors:
     assert backend.chat_id == "-100123456"
     assert backend.polling_timeout_seconds == 3
     assert backend.polling_interval_seconds == 0.5
+
+
+def test_load_config_supports_telegram_reminders(tmp_path: Path) -> None:
+    """Rules can opt into Telegram reminder delivery with parsed durations."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+mqtt:
+  host: localhost
+
+notifications:
+  backends:
+    - id: main_telegram
+      type: telegram
+      bot_token: 123456:secret
+      chat_id: -100123456
+
+sensors:
+  - id: freezer_1
+    topic: measurements/freezer1
+    value_field: temperature
+    rules:
+      - id: high_warn
+        direction: above
+        threshold: 5.0
+        for: 15m
+        severity: low
+        backend: main_telegram
+        reminders:
+          initial_delay: 3m
+          multiplier: 1.5
+          max_interval: 30m
+          stop_after: 12h
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    reminders = config.sensors[0].rules[0].reminders
+    assert reminders.enabled is True
+    assert reminders.initial_delay.total_seconds() == 180
+    assert reminders.multiplier == 1.5
+    assert reminders.max_interval.total_seconds() == 1800
+    assert reminders.stop_after.total_seconds() == 43200
+
+
+def test_load_config_rejects_reminders_for_non_telegram_backend(
+    tmp_path: Path,
+) -> None:
+    """Acknowledgement-driven reminders require Telegram callbacks."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+mqtt:
+  host: localhost
+
+notifications:
+  backends:
+    - id: main_ntfy
+      type: ntfy
+      server: https://ntfy.sh
+      topic: alerts
+
+sensors:
+  - id: freezer_1
+    topic: measurements/freezer1
+    value_field: temperature
+    rules:
+      - id: high_warn
+        direction: above
+        threshold: 5.0
+        for: 15m
+        severity: low
+        backend: main_ntfy
+        reminders:
+          enabled: true
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="telegram backend"):
+        load_config(config_path)
