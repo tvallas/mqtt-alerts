@@ -21,6 +21,21 @@ notifications:
       server: https://ntfy.sh
       topic: some-secret-topic
 
+    - id: main_pushover
+      type: pushover
+      api_token: replace-with-application-token
+      user_key: replace-with-user-or-group-key
+      sound: siren
+      emergency_retry_seconds: 300
+      emergency_expire_seconds: 10800
+      polling_enabled: true
+      polling_interval_seconds: 10.0
+      priority_by_severity:
+        low: 0
+        warning: 1
+        high: 1
+        critical: 2
+
 sensors:
   - id: freezer_1
     name: Freezer 1
@@ -52,5 +67,5 @@ sensors:
         threshold: 8.0
         for: 10m
         severity: critical
-        backend: main_ntfy
+        backend: main_pushover
         enabled: true

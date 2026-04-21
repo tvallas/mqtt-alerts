@@ -117,6 +117,21 @@ notifications:
       server: https://ntfy.sh
       topic: some-secret-topic
 
+    - id: main_pushover
+      type: pushover
+      api_token: replace-with-application-token
+      user_key: replace-with-user-or-group-key
+      sound: siren
+      emergency_retry_seconds: 300
+      emergency_expire_seconds: 10800
+      polling_enabled: true
+      polling_interval_seconds: 10.0
+      priority_by_severity:
+        low: 0
+        warning: 1
+        high: 1
+        critical: 2
+
 sensors:
   - id: freezer_1
     name: Freezer 1
@@ -148,7 +163,7 @@ sensors:
         threshold: 8.0
         for: 10m
         severity: critical
-        backend: main_ntfy
+        backend: main_pushover
         enabled: true
 ```
 
@@ -160,6 +175,7 @@ Notes:
 - each rule can define `hysteresis` to avoid alert/recovery flapping near the threshold
 - each rule can customize automatic recovery messages (`recovery_enabled`, `recovery_title`, `recovery_message`)
 - Telegram rules can opt into acknowledgement reminders with `reminders`; reminders repeat until acknowledgement, recovery, or `stop_after`
+- Pushover critical alerts can use emergency priority and receipt polling to acknowledge alert instances
 - state is tracked per `(sensor_id, rule_id)` pair, while alert instances are tracked separately for each firing period
 - Telegram `chat_id` may be a numeric id such as `-100...` for groups
 
@@ -173,11 +189,13 @@ This repository currently ships with:
 | --- | --- | --- | --- | --- | --- |
 | `ntfy` | Yes | No | N/A | No | Outbound notification delivery only |
 | `telegram` | Yes | Yes | Bot API `getUpdates` long polling | No | Primary mobile acknowledgement channel |
+| `pushover` | Yes | Yes for emergency-priority messages | Receipt API polling | No | Urgent mobile alerts that repeat until acknowledged |
 
 Practical conclusions:
 
 - `ntfy` is a good outbound notification backend, but it is not the primary interactive acknowledgement channel for this architecture.
 - Telegram works well here because `mqtt-alerts` can poll outward to the Telegram Bot API and receive button presses without exposing a webhook endpoint.
+- Pushover works well for critical mobile alerts because emergency-priority messages repeat from Pushover's servers until acknowledged in the Pushover app.
 
 ### Telegram alert reminders
 
@@ -193,6 +211,43 @@ reminders:
 ```
 
 With those defaults, the first reminder is sent 5 minutes after the initial alert, then 10 minutes later, then 20 minutes later, up to one reminder per hour. Reminder delivery stops when the alert is acknowledged, when the condition recovers, or 24 hours after the initial alert notification.
+
+### Pushover emergency acknowledgements
+
+Pushover can repeat emergency-priority notifications until the recipient acknowledges them in the Pushover app. `mqtt-alerts` stores the receipt returned by Pushover, polls the receipt API, and marks the alert instance as acknowledged once Pushover reports acknowledgement.
+
+```yaml
+notifications:
+  backends:
+    - id: main_pushover
+      type: pushover
+      api_token: replace-with-application-token
+      user_key: replace-with-user-or-group-key
+      sound: siren
+      emergency_retry_seconds: 300
+      emergency_expire_seconds: 10800
+      polling_enabled: true
+      polling_interval_seconds: 10.0
+      priority_by_severity:
+        low: 0
+        warning: 1
+        high: 1
+        critical: 2
+```
+
+Field meanings:
+
+- `api_token`: Pushover application token
+- `user_key`: Pushover user key or delivery group key
+- `device`: optional target device name
+- `sound`: optional Pushover sound name
+- `priority_by_severity`: optional mapping from rule severity to Pushover priority; by default `critical` maps to emergency priority `2`
+- `emergency_retry_seconds`: retry interval for emergency priority, minimum `30`
+- `emergency_expire_seconds`: how long Pushover retries emergency priority, maximum `10800` seconds
+- `polling_enabled`: disable only if you want outbound Pushover delivery without receipt acknowledgement
+- `polling_interval_seconds`: delay between receipt polling passes
+
+When a Pushover-backed alert recovers before acknowledgement, `mqtt-alerts` asks Pushover to cancel active emergency retries for that receipt.
 
 ## Telegram Setup
 
@@ -266,7 +321,7 @@ No inbound webhook and no public HTTP endpoint are required.
 
 ## Security Notes
 
-- keep the Telegram bot token out of screenshots, logs, shell history, and public repositories
+- keep Telegram bot tokens, Pushover application tokens, and Pushover user keys out of screenshots, logs, shell history, and public repositories
 - keep the config file readable only by the user or service account that runs `mqtt-alerts`
 - if the bot is added to a shared group, anyone who can press the acknowledgement button in that chat can acknowledge alerts
 
@@ -278,7 +333,7 @@ A typical setup looks like this:
 2. `mqtt-alerts` subscribes to selected measurement topics.
 3. `mqtt-alerts` extracts the configured value field and evaluates one or more rules per sensor.
 4. When a condition stays active for long enough, `mqtt-alerts` creates or updates an alert instance and sends a notification through the configured backend.
-5. If Telegram is configured, acknowledgements flow back through Bot API long polling.
+5. If Telegram or Pushover acknowledgement polling is configured, acknowledgements flow back through outbound polling.
 
 ## Architecture
 
@@ -287,7 +342,7 @@ The code is intentionally split into small modules:
 - `mqtt_alerts.config`: YAML loading and validation
 - `mqtt_alerts.engine`: per-rule threshold evaluation plus alert lifecycle handling
 - `mqtt_alerts.persistence`: SQLite rule state and alert instance storage
-- `mqtt_alerts.notifications`: backend abstraction plus `ntfy` and Telegram delivery/polling
+- `mqtt_alerts.notifications`: backend abstraction plus `ntfy`, Telegram, and Pushover delivery/polling
 - `mqtt_alerts.runtime`: MQTT subscription loop and application wiring
 - `mqtt_alerts.cli`: CLI entrypoint
 
@@ -297,6 +352,7 @@ SQLite persistence now stores:
 - the active alert instance id, when one exists
 - alert instance lifecycle timestamps
 - acknowledgement metadata such as who acknowledged and when
+- backend delivery receipts for acknowledgement-capable services
 
 Existing databases are migrated on startup so in-flight rule state is not lost when upgrading.
 
