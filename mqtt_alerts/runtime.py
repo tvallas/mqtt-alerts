@@ -15,6 +15,7 @@ from mqtt_alerts.engine import AlertEngine
 from mqtt_alerts.models import ACK_STATUS_ACKNOWLEDGED, ACK_STATUS_ALREADY_ACKNOWLEDGED
 from mqtt_alerts.models import ACK_STATUS_NOT_ACTIVE, ACK_STATUS_NOT_FOUND
 from mqtt_alerts.models import AcknowledgementResult, EvaluationResult, RuleKey
+from mqtt_alerts.models import RuleState
 from mqtt_alerts.notifications import (
     NotificationDispatcher,
     NotificationError,
@@ -96,6 +97,7 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
             while True:
                 self._reload_config_if_changed()
                 self._poll_notification_backends()
+                self._send_due_reminders()
                 loop_result = client.loop(timeout=self._reload_interval_seconds)
                 if loop_result == mqtt.MQTT_ERR_SUCCESS:
                     continue
@@ -159,6 +161,13 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
         self._deliver_notifications(result)
         self._state_store.save_updates(result.state_updates, result.alert_updates)
 
+    def _send_due_reminders(self) -> None:
+        result = self._engine.process_reminders(datetime.now(timezone.utc))
+        if not result.notifications:
+            return
+        self._deliver_notifications(result)
+        self._state_store.save_updates(result.state_updates, result.alert_updates)
+
     def _deliver_notifications(self, result: EvaluationResult) -> None:
         for notification in result.notifications:
             key = RuleKey(
@@ -174,7 +183,9 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
                     notification.rule_id,
                 )
             except NotificationError as error:
-                _rollback_state_after_delivery_error(result, key)
+                previous_state = _rollback_state_after_delivery_error(result, key)
+                if previous_state is not None:
+                    self._engine.restore_state(key, previous_state)
                 LOGGER.error("notification delivery failed: %s", error)
 
     def _poll_notification_backends(self) -> None:
@@ -306,19 +317,18 @@ def _decode_payload(raw_payload: bytes) -> dict[str, object]:
 
 def _rollback_state_after_delivery_error(
     result: EvaluationResult, key: RuleKey
-) -> None:
+) -> RuleState | None:
     previous_state = result.rollback_states.get(key)
     if previous_state is None:
-        return
+        return None
     result.state_updates[key] = previous_state
     current_alert = previous_state.current_alert
     if current_alert is not None:
         result.alert_updates[current_alert.id] = current_alert.copy()
+    return previous_state
 
 
-def _log_acknowledgement_result(
-    result: AcknowledgementResult, alert_id: str
-) -> None:
+def _log_acknowledgement_result(result: AcknowledgementResult, alert_id: str) -> None:
     alert = result.alert
     if result.status == ACK_STATUS_ACKNOWLEDGED and alert is not None:
         LOGGER.info(
@@ -330,7 +340,7 @@ def _log_acknowledgement_result(
         )
         return
     if result.status == ACK_STATUS_ALREADY_ACKNOWLEDGED:
-        LOGGER.info("alert id=%s was already acknowledged", alert_id)
+        LOGGER.debug("alert id=%s was already acknowledged", alert_id)
         return
     if result.status == ACK_STATUS_NOT_ACTIVE:
         LOGGER.info("alert id=%s is no longer active", alert_id)

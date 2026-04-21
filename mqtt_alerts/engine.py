@@ -28,6 +28,16 @@ class AlertEngine:
         initial_state: dict[RuleKey, RuleState] | None = None,
     ) -> None:
         self._sensors_by_topic = {sensor.topic: sensor for sensor in sensors}
+        self._sensors_by_key = {
+            RuleKey(sensor_id=sensor.id, rule_id=rule.id): sensor
+            for sensor in sensors
+            for rule in sensor.rules
+        }
+        self._rules_by_key = {
+            RuleKey(sensor_id=sensor.id, rule_id=rule.id): rule
+            for sensor in sensors
+            for rule in sensor.rules
+        }
         self._state = dict(initial_state or {})
         self._alert_index: dict[str, RuleKey] = {}
         for key, state in self._state.items():
@@ -86,9 +96,51 @@ class AlertEngine:
             rollback_states=rollback_states,
         )
 
+    def process_reminders(self, observed_at: datetime) -> EvaluationResult:
+        """Return reminder notifications that are due for active alerts."""
+        notifications: list[Notification] = []
+        state_updates: dict[RuleKey, RuleState] = {}
+        rollback_states: dict[RuleKey, RuleState] = {}
+
+        for key, state in self._state.items():
+            sensor = self._sensors_by_key.get(key)
+            rule = self._rules_by_key.get(key)
+            if sensor is None or rule is None:
+                continue
+
+            previous_state = state.copy()
+            previous_snapshot = previous_state.durable_snapshot()
+            notification = self._evaluate_reminder(rule, state, observed_at)
+            if notification is None:
+                continue
+            if state.durable_snapshot() != previous_snapshot:
+                state_updates[key] = state.copy()
+            notifications.append(notification)
+            rollback_states[key] = previous_state
+
+        return EvaluationResult(
+            notifications=notifications,
+            state_updates=state_updates,
+            rollback_states=rollback_states,
+        )
+
     def state_for(self, sensor_id: str, rule_id: str) -> RuleState:
         """Expose current in-memory state for tests."""
         return self._state[RuleKey(sensor_id=sensor_id, rule_id=rule_id)]
+
+    def restore_state(self, key: RuleKey, state: RuleState) -> None:
+        """Restore one rule state after a failed side effect."""
+        previous_state = self._state.get(key)
+        if previous_state is not None and previous_state.current_alert is not None:
+            self._alert_index.pop(previous_state.current_alert.id, None)
+
+        restored_state = state.copy()
+        self._state[key] = restored_state
+        if (
+            restored_state.current_alert is not None
+            and restored_state.current_alert.state != ALERT_STATE_RESOLVED
+        ):
+            self._alert_index[restored_state.current_alert.id] = key
 
     def acknowledge_alert(
         self,
@@ -149,6 +201,7 @@ class AlertEngine:
                 state.alert_triggered = False
                 state.triggered_at = None
                 state.last_notification_at = None
+                state.reminder_count = 0
                 state.current_alert = _create_alert_instance(sensor, rule, observed_at)
                 self._alert_index[state.current_alert.id] = key
                 return None, state.current_alert.copy()
@@ -173,6 +226,7 @@ class AlertEngine:
                 state.alert_triggered = True
                 state.triggered_at = observed_at
                 state.last_notification_at = observed_at
+                state.reminder_count = 0
                 alert.state = ALERT_STATE_FIRING
                 alert.triggered_at = observed_at
                 return (
@@ -200,6 +254,7 @@ class AlertEngine:
         state.alert_triggered = False
         state.triggered_at = None
         state.last_notification_at = None
+        state.reminder_count = 0
         state.current_alert = None
         if should_send_recovery:
             return (
@@ -214,6 +269,42 @@ class AlertEngine:
                 resolved_alert,
             )
         return None, resolved_alert
+
+    def _evaluate_reminder(  # pylint: disable=too-many-return-statements
+        self,
+        rule: RuleConfig,
+        state: RuleState,
+        observed_at: datetime,
+    ) -> Notification | None:
+        if not rule.reminders.enabled:
+            return None
+        if not state.condition_active or not state.alert_triggered:
+            return None
+        if state.latest_value is None:
+            return None
+
+        alert = state.current_alert
+        if alert is None or alert.state != ALERT_STATE_FIRING:
+            return None
+        if alert.triggered_at is None or state.last_notification_at is None:
+            return None
+        if observed_at - alert.triggered_at >= rule.reminders.stop_after:
+            return None
+
+        next_interval = _next_reminder_interval(rule, state.reminder_count)
+        if observed_at - state.last_notification_at < next_interval:
+            return None
+
+        state.last_notification_at = observed_at
+        state.reminder_count += 1
+        return _build_reminder_notification(
+            rule,
+            alert,
+            state.latest_value,
+            observed_at,
+            _active_duration(state.active_since, observed_at),
+            state.reminder_count,
+        )
 
 
 def _extract_numeric_value(payload: dict[str, Any], field_name: str) -> float:
@@ -282,6 +373,50 @@ def _build_alert_notification(
     )
 
 
+def _build_reminder_notification(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    rule: RuleConfig,
+    alert: AlertInstance,
+    value: float,
+    observed_at: datetime,
+    active_duration: timedelta,
+    reminder_count: int,
+) -> Notification:
+    title = rule.title or f"{alert.sensor_name} {alert.severity} alert"
+    message = _render_message(
+        template=rule.message,
+        fallback=(
+            f"{alert.sensor_name} alert is still active\n"
+            f"Threshold: {alert.direction} {alert.threshold:.2f}\n"
+            f"Exceeded for: {format_duration(active_duration)}\n"
+            f"Current value: {value:.2f}"
+        ),
+        sensor_name=alert.sensor_name,
+        threshold=alert.threshold,
+        direction=alert.direction,
+        severity=alert.severity,
+        hold_for=rule.hold_for,
+        value=value,
+        active_duration=active_duration,
+    )
+    return Notification(
+        kind="reminder",
+        alert_id=alert.id,
+        alert_state=alert.state,
+        backend_id=alert.backend_id,
+        sensor_id=alert.sensor_id,
+        sensor_name=alert.sensor_name,
+        sensor_topic=alert.sensor_topic,
+        rule_id=alert.rule_id,
+        severity=alert.severity,
+        title=f"Reminder {reminder_count}: {title}",
+        message=message,
+        value=value,
+        threshold=alert.threshold,
+        direction=alert.direction,
+        occurred_at=observed_at,
+    )
+
+
 def _build_recovery_notification(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     alert: AlertInstance | None,
     sensor: SensorConfig,
@@ -329,6 +464,13 @@ def _build_recovery_notification(  # pylint: disable=too-many-arguments,too-many
         acknowledged_at=alert.acknowledged_at,
         acknowledged_by=alert.acknowledged_by,
     )
+
+
+def _next_reminder_interval(rule: RuleConfig, reminder_count: int) -> timedelta:
+    interval = rule.reminders.initial_delay * (
+        rule.reminders.multiplier**reminder_count
+    )
+    return min(interval, rule.reminders.max_interval)
 
 
 def _render_message(  # pylint: disable=too-many-arguments,too-many-positional-arguments

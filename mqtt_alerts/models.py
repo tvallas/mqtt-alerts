@@ -35,6 +35,7 @@ class RuleState:  # pylint: disable=too-many-instance-attributes
     alert_triggered: bool = False
     triggered_at: datetime | None = None
     last_notification_at: datetime | None = None
+    reminder_count: int = 0
     current_alert: "AlertInstance | None" = None
 
     def durable_snapshot(
@@ -45,6 +46,7 @@ class RuleState:  # pylint: disable=too-many-instance-attributes
         bool,
         datetime | None,
         datetime | None,
+        int,
         tuple[
             str,
             str,
@@ -63,6 +65,7 @@ class RuleState:  # pylint: disable=too-many-instance-attributes
             self.alert_triggered,
             self.triggered_at,
             self.last_notification_at,
+            self.reminder_count,
             (
                 None
                 if self.current_alert is None

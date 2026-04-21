@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from mqtt_alerts.config import RuleConfig, SensorConfig
+from mqtt_alerts.config import ReminderConfig, RuleConfig, SensorConfig
 from mqtt_alerts.engine import AlertEngine
 from mqtt_alerts.models import ACK_STATUS_ACKNOWLEDGED, ACK_STATUS_ALREADY_ACKNOWLEDGED
 from mqtt_alerts.models import RuleKey, RuleState
@@ -503,6 +503,131 @@ def test_recovery_still_happens_after_acknowledgement() -> None:
     assert recovered.notifications[0].kind == "recovery"
     assert recovered.notifications[0].acknowledged_by == "@alice"
     assert engine.state_for("freezer_1", "high_warn").current_alert is None
+
+
+def test_unacknowledged_alert_sends_reminders_with_backoff() -> None:
+    """Unacknowledged firing alerts should emit reminders on the backoff schedule."""
+    sensor = _build_sensor(
+        rules=(
+            RuleConfig(
+                id="high_warn",
+                direction="above",
+                threshold=5.0,
+                hold_for=timedelta(minutes=1),
+                severity="warning",
+                backend="main_telegram",
+                reminders=ReminderConfig(
+                    enabled=True,
+                    initial_delay=timedelta(minutes=5),
+                    multiplier=2.0,
+                    max_interval=timedelta(hours=1),
+                    stop_after=timedelta(hours=24),
+                ),
+            ),
+        )
+    )
+    engine = AlertEngine((sensor,))
+    start = _utc(2025, 1, 1, 17, 0, 0)
+
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.0},
+        observed_at=start,
+    )
+    fired = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.2},
+        observed_at=start + timedelta(minutes=1),
+    )
+    first_early = engine.process_reminders(start + timedelta(minutes=5))
+    first_due = engine.process_reminders(start + timedelta(minutes=6))
+    second_early = engine.process_reminders(start + timedelta(minutes=15))
+    second_due = engine.process_reminders(start + timedelta(minutes=16))
+
+    assert len(fired.notifications) == 1
+    assert not first_early.notifications
+    assert [item.kind for item in first_due.notifications] == ["reminder"]
+    assert first_due.notifications[0].alert_id == fired.notifications[0].alert_id
+    assert first_due.notifications[0].title.startswith("Reminder 1:")
+    assert not second_early.notifications
+    assert [item.kind for item in second_due.notifications] == ["reminder"]
+    assert second_due.notifications[0].title.startswith("Reminder 2:")
+    assert engine.state_for("freezer_1", "high_warn").reminder_count == 2
+
+
+def test_acknowledgement_suppresses_reminders() -> None:
+    """Acknowledged alerts should remain active but stop reminder delivery."""
+    sensor = _build_sensor(
+        rules=(
+            RuleConfig(
+                id="high_warn",
+                direction="above",
+                threshold=5.0,
+                hold_for=timedelta(minutes=1),
+                severity="warning",
+                backend="main_telegram",
+                reminders=ReminderConfig(enabled=True),
+            ),
+        )
+    )
+    engine = AlertEngine((sensor,))
+    start = _utc(2025, 1, 1, 18, 0, 0)
+
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.0},
+        observed_at=start,
+    )
+    fired = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.2},
+        observed_at=start + timedelta(minutes=1),
+    )
+    engine.acknowledge_alert(
+        fired.notifications[0].alert_id,
+        acknowledged_at=start + timedelta(minutes=2),
+        acknowledged_by="@alice",
+    )
+    reminder = engine.process_reminders(start + timedelta(hours=1))
+
+    assert not reminder.notifications
+
+
+def test_reminders_stop_after_configured_duration() -> None:
+    """Reminder delivery should stop after the configured reminder window."""
+    sensor = _build_sensor(
+        rules=(
+            RuleConfig(
+                id="high_warn",
+                direction="above",
+                threshold=5.0,
+                hold_for=timedelta(minutes=1),
+                severity="warning",
+                backend="main_telegram",
+                reminders=ReminderConfig(
+                    enabled=True,
+                    initial_delay=timedelta(minutes=5),
+                    stop_after=timedelta(hours=24),
+                ),
+            ),
+        )
+    )
+    engine = AlertEngine((sensor,))
+    start = _utc(2025, 1, 1, 19, 0, 0)
+
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.0},
+        observed_at=start,
+    )
+    engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.2},
+        observed_at=start + timedelta(minutes=1),
+    )
+    reminder = engine.process_reminders(start + timedelta(days=1, minutes=1))
+
+    assert not reminder.notifications
 
 
 def _build_sensor(rules: tuple[RuleConfig, ...] | None = None) -> SensorConfig:

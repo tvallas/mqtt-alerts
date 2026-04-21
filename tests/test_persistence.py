@@ -36,6 +36,7 @@ def test_acknowledged_alert_persists_across_restart(tmp_path) -> None:
         alert_triggered=True,
         triggered_at=datetime(2025, 1, 1, 10, 15, tzinfo=timezone.utc),
         last_notification_at=datetime(2025, 1, 1, 10, 15, tzinfo=timezone.utc),
+        reminder_count=2,
         current_alert=alert,
     )
 
@@ -51,4 +52,5 @@ def test_acknowledged_alert_persists_across_restart(tmp_path) -> None:
     assert loaded_state.current_alert.state == "acknowledged"
     assert loaded_state.current_alert.acknowledged_by == "@alice"
     assert loaded_state.condition_active is True
+    assert loaded_state.reminder_count == 2
     reloaded.close()
