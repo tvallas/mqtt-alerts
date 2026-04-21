@@ -71,6 +71,63 @@ sensors:
     assert config.sensors[0].rules[0].hysteresis == 0.0
 
 
+def test_load_config_supports_multiple_value_fields_on_one_topic(
+    tmp_path: Path,
+) -> None:
+    """One MQTT topic can provide multiple configured value fields."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+mqtt:
+  host: localhost
+  topic_prefix: measurements
+
+notifications:
+  backends:
+    - id: main_ntfy
+      type: ntfy
+      server: https://ntfy.sh
+      topic: alerts
+
+sensors:
+  - id: freezer_temperature
+    topic: receiver1/freezer1
+    value_field: temperature
+    rules:
+      - id: high_warn
+        direction: above
+        threshold: 5.0
+        for: 15m
+        severity: low
+        backend: main_ntfy
+
+  - id: freezer_battery
+    topic: receiver1/freezer1
+    value_field: battery
+    rules:
+      - id: low_battery
+        direction: below
+        threshold: 2.6
+        hysteresis: 0.1
+        for: 30m
+        severity: critical
+        backend: main_ntfy
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert [sensor.id for sensor in config.sensors] == [
+        "freezer_temperature",
+        "freezer_battery",
+    ]
+    assert config.sensors[0].topic == "measurements/receiver1/freezer1"
+    assert config.sensors[1].topic == "measurements/receiver1/freezer1"
+    assert config.sensors[0].value_field == "temperature"
+    assert config.sensors[1].value_field == "battery"
+
+
 def test_load_config_rejects_unknown_backend_reference(tmp_path: Path) -> None:
     """Rules must target a known backend id."""
     config_path = tmp_path / "config.yml"
