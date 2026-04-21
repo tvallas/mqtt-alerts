@@ -102,6 +102,7 @@ class AlertInstance:  # pylint: disable=too-many-instance-attributes
     acknowledged_at: datetime | None = None
     acknowledged_by: str | None = None
     resolved_at: datetime | None = None
+    delivery_receipt: str | None = None
 
     def durable_snapshot(
         self,
@@ -113,6 +114,7 @@ class AlertInstance:  # pylint: disable=too-many-instance-attributes
         datetime | None,
         str | None,
         datetime | None,
+        str | None,
     ]:
         """Return the persisted fields used for restart correctness."""
         return (
@@ -123,6 +125,7 @@ class AlertInstance:  # pylint: disable=too-many-instance-attributes
             self.acknowledged_at,
             self.acknowledged_by,
             self.resolved_at,
+            self.delivery_receipt,
         )
 
     def copy(self) -> "AlertInstance":
@@ -154,6 +157,15 @@ class Notification:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
+class NotificationDelivery:
+    """Backend-specific delivery metadata returned after sending."""
+
+    alert_id: str
+    backend_id: str
+    receipt: str | None = None
+
+
+@dataclass(frozen=True)
 class EvaluationResult:
     """State updates plus any notifications created while processing a message."""
 
@@ -171,3 +183,12 @@ class AcknowledgementResult:
     alert: AlertInstance | None = None
     state_updates: dict[RuleKey, RuleState] = field(default_factory=dict)
     alert_updates: dict[str, AlertInstance] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReceiptAcknowledgement:
+    """Acknowledgement discovered by polling a backend delivery receipt."""
+
+    alert_id: str
+    acknowledged_at: datetime
+    acknowledged_by: str | None

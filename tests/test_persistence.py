@@ -27,6 +27,7 @@ def test_acknowledged_alert_persists_across_restart(tmp_path) -> None:
         triggered_at=datetime(2025, 1, 1, 10, 15, tzinfo=timezone.utc),
         acknowledged_at=datetime(2025, 1, 1, 10, 16, tzinfo=timezone.utc),
         acknowledged_by="@alice",
+        delivery_receipt="receipt-123",
     )
     state = RuleState(
         latest_value=6.5,
@@ -51,6 +52,7 @@ def test_acknowledged_alert_persists_across_restart(tmp_path) -> None:
     assert loaded_state.current_alert.id == "alert-123"
     assert loaded_state.current_alert.state == "acknowledged"
     assert loaded_state.current_alert.acknowledged_by == "@alice"
+    assert loaded_state.current_alert.delivery_receipt == "receipt-123"
     assert loaded_state.condition_active is True
     assert loaded_state.reminder_count == 2
     reloaded.close()

@@ -64,6 +64,23 @@ class TelegramBackendConfig(NotificationBackendConfig):
 
 
 @dataclass(frozen=True)
+class PushoverBackendConfig(NotificationBackendConfig):  # pylint: disable=too-many-instance-attributes
+    """Configuration for the Pushover backend."""
+
+    api_token: str
+    user_key: str
+    device: str | None = None
+    sound: str | None = None
+    url: str | None = None
+    url_title: str | None = None
+    priority_by_severity: dict[str, int] = field(default_factory=dict)
+    emergency_retry_seconds: int = 300
+    emergency_expire_seconds: int = 10800
+    polling_enabled: bool = True
+    polling_interval_seconds: float = 10.0
+
+
+@dataclass(frozen=True)
 class ReminderConfig:
     """Repeated alert delivery settings for unacknowledged alerts."""
 
@@ -245,10 +262,61 @@ def _load_notification_backends(raw_value: Any) -> list[NotificationBackendConfi
             )
             continue
 
+        if backend_type == "pushover":
+            backends.append(_load_pushover_backend(entry, index, backend_id))
+            continue
+
         raise ConfigError(
-            f"unsupported backend type {backend_type!r}; expected 'ntfy' or 'telegram'"
+            f"unsupported backend type {backend_type!r}; "
+            "expected 'ntfy', 'telegram', or 'pushover'"
         )
     return backends
+
+
+def _load_pushover_backend(
+    entry: dict[str, Any],
+    index: int,
+    backend_id: str,
+) -> PushoverBackendConfig:
+    field_prefix = f"notifications.backends[{index}]"
+    retry_seconds = _coerce_int(
+        entry.get("emergency_retry_seconds", 300),
+        f"{field_prefix}.emergency_retry_seconds",
+    )
+    expire_seconds = _coerce_int(
+        entry.get("emergency_expire_seconds", 10800),
+        f"{field_prefix}.emergency_expire_seconds",
+    )
+    if retry_seconds < 30:
+        raise ConfigError(f"{field_prefix}.emergency_retry_seconds must be at least 30")
+    if expire_seconds <= 0 or expire_seconds > 10800:
+        raise ConfigError(
+            f"{field_prefix}.emergency_expire_seconds must be between 1 and 10800"
+        )
+    return PushoverBackendConfig(
+        id=backend_id,
+        type="pushover",
+        api_token=_require_string(entry.get("api_token"), f"{field_prefix}.api_token"),
+        user_key=_require_string(entry.get("user_key"), f"{field_prefix}.user_key"),
+        device=_optional_string(entry.get("device"), f"{field_prefix}.device"),
+        sound=_optional_string(entry.get("sound"), f"{field_prefix}.sound"),
+        url=_optional_string(entry.get("url"), f"{field_prefix}.url"),
+        url_title=_optional_string(entry.get("url_title"), f"{field_prefix}.url_title"),
+        priority_by_severity=_load_priority_by_severity(
+            entry.get("priority_by_severity"),
+            f"{field_prefix}.priority_by_severity",
+        ),
+        emergency_retry_seconds=retry_seconds,
+        emergency_expire_seconds=expire_seconds,
+        polling_enabled=_coerce_bool(
+            entry.get("polling_enabled", True),
+            f"{field_prefix}.polling_enabled",
+        ),
+        polling_interval_seconds=_coerce_non_negative_float(
+            entry.get("polling_interval_seconds", 10.0),
+            f"{field_prefix}.polling_interval_seconds",
+        ),
+    )
 
 
 def _load_sensors(raw_value: Any, topic_prefix: str | None) -> list[SensorConfig]:
@@ -407,6 +475,23 @@ def _load_reminder_config(raw_value: Any, field_name: str) -> ReminderConfig:
         max_interval=max_interval,
         stop_after=stop_after,
     )
+
+
+def _load_priority_by_severity(raw_value: Any, field_name: str) -> dict[str, int]:
+    if raw_value is None:
+        return {}
+    data = _require_mapping(raw_value, field_name)
+    priorities: dict[str, int] = {}
+    for severity, raw_priority in data.items():
+        if not isinstance(severity, str) or not severity.strip():
+            raise ConfigError(f"{field_name} keys must be non-empty strings")
+        priority = _coerce_int(raw_priority, f"{field_name}.{severity}")
+        if priority not in {-2, -1, 0, 1, 2}:
+            raise ConfigError(
+                f"{field_name}.{severity} must be one of -2, -1, 0, 1, or 2"
+            )
+        priorities[severity.strip().lower()] = priority
+    return priorities
 
 
 def _require_mapping(value: Any, field_name: str) -> dict[str, Any]:

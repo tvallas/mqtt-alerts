@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+from urllib.parse import parse_qs
 
-from mqtt_alerts.config import NtfyBackendConfig, TelegramBackendConfig
+from mqtt_alerts.config import NtfyBackendConfig, PushoverBackendConfig
+from mqtt_alerts.config import TelegramBackendConfig
 from mqtt_alerts.models import (
     ACK_STATUS_ACKNOWLEDGED,
     AcknowledgementResult,
     AlertInstance,
 )
 from mqtt_alerts.models import Notification
-from mqtt_alerts.notifications import NtfyBackend, TelegramBackend
+from mqtt_alerts.notifications import NtfyBackend, PushoverBackend, TelegramBackend
 from mqtt_alerts.notifications import TelegramInteraction, build_telegram_callback_data
 from mqtt_alerts.notifications import parse_telegram_callback_data
 
@@ -78,6 +80,190 @@ def test_ntfy_backend_builds_expected_request() -> None:
     assert captured["headers"]["Priority"] == "5"
     assert captured["headers"]["Tags"] == "rotating_light"
     assert captured["timeout"] == 10
+
+
+def test_pushover_backend_sends_emergency_alert_and_returns_receipt() -> None:
+    """Critical Pushover alerts should include emergency retry fields."""
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"status": 1, "request": "request-1", "receipt": "receipt-123"}
+            ).encode("utf-8")
+
+    def fake_open(request, timeout):
+        captured["url"] = request.full_url
+        captured["payload"] = parse_qs(request.data.decode("utf-8"))
+        captured["headers"] = dict(request.header_items())
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    backend = PushoverBackend(
+        PushoverBackendConfig(
+            id="main_pushover",
+            type="pushover",
+            api_token="app-token",
+            user_key="user-key",
+            device="iphone",
+            sound="siren",
+            emergency_retry_seconds=60,
+            emergency_expire_seconds=3600,
+        ),
+        opener=fake_open,
+    )
+
+    delivery = backend.send(
+        Notification(
+            kind="alert",
+            alert_id="alert-1",
+            alert_state="firing",
+            backend_id="main_pushover",
+            sensor_id="freezer_1",
+            sensor_name="Freezer 1",
+            sensor_topic="measurements/freezer1",
+            rule_id="high_critical",
+            severity="critical",
+            title="Freezer critical alert",
+            message="Temperature is too high",
+            value=8.6,
+            threshold=8.0,
+            direction="above",
+            occurred_at=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert captured["url"] == "https://api.pushover.net/1/messages.json"
+    assert captured["headers"]["Content-type"] == "application/x-www-form-urlencoded"
+    assert captured["payload"]["token"] == ["app-token"]
+    assert captured["payload"]["user"] == ["user-key"]
+    assert captured["payload"]["device"] == ["iphone"]
+    assert captured["payload"]["sound"] == ["siren"]
+    assert captured["payload"]["priority"] == ["2"]
+    assert captured["payload"]["retry"] == ["60"]
+    assert captured["payload"]["expire"] == ["3600"]
+    assert captured["payload"]["tags"] == ["mqtt-alerts,alert=alert-1"]
+    assert captured["payload"]["timestamp"] == ["1735725600"]
+    assert delivery is not None
+    assert delivery.receipt == "receipt-123"
+
+
+def test_pushover_backend_polls_receipts_for_acknowledgement() -> None:
+    """Pushover receipt polling should surface acknowledged emergency alerts."""
+    requests = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "status": 1,
+                    "acknowledged": 1,
+                    "acknowledged_at": 1735725900,
+                    "acknowledged_by": "user-key",
+                    "acknowledged_by_device": "iphone",
+                }
+            ).encode("utf-8")
+
+    def fake_open(request, timeout):
+        requests.append({"url": request.full_url, "method": request.get_method()})
+        return FakeResponse()
+
+    backend = PushoverBackend(
+        PushoverBackendConfig(
+            id="main_pushover",
+            type="pushover",
+            api_token="app-token",
+            user_key="user-key",
+        ),
+        opener=fake_open,
+    )
+    alert = AlertInstance(
+        id="alert-1",
+        sensor_id="freezer_1",
+        sensor_name="Freezer 1",
+        sensor_topic="measurements/freezer1",
+        rule_id="high_critical",
+        severity="critical",
+        backend_id="main_pushover",
+        threshold=8.0,
+        direction="above",
+        started_at=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc),
+        state="firing",
+        delivery_receipt="receipt-123",
+    )
+
+    acknowledgements = backend.poll_receipts(
+        [alert],
+        datetime(2025, 1, 1, 10, 6, tzinfo=timezone.utc),
+    )
+
+    assert requests == [
+        {
+            "url": (
+                "https://api.pushover.net/1/receipts/"
+                "receipt-123.json?token=app-token"
+            ),
+            "method": "GET",
+        }
+    ]
+    assert len(acknowledgements) == 1
+    assert acknowledgements[0].alert_id == "alert-1"
+    assert acknowledgements[0].acknowledged_at == datetime(
+        2025, 1, 1, 10, 5, tzinfo=timezone.utc
+    )
+    assert acknowledgements[0].acknowledged_by == "pushover user user-key on iphone"
+
+
+def test_pushover_backend_cancels_emergency_retry_receipt() -> None:
+    """Resolved alerts should be able to cancel active Pushover emergency retries."""
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps({"status": 1, "request": "request-1"}).encode("utf-8")
+
+    def fake_open(request, timeout):
+        captured["url"] = request.full_url
+        captured["payload"] = parse_qs(request.data.decode("utf-8"))
+        captured["method"] = request.get_method()
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    backend = PushoverBackend(
+        PushoverBackendConfig(
+            id="main_pushover",
+            type="pushover",
+            api_token="app-token",
+            user_key="user-key",
+        ),
+        opener=fake_open,
+    )
+
+    backend.cancel_receipt("receipt-123")
+
+    assert (
+        captured["url"] == "https://api.pushover.net/1/receipts/receipt-123/cancel.json"
+    )
+    assert captured["payload"] == {"token": ["app-token"]}
+    assert captured["method"] == "POST"
 
 
 def test_telegram_backend_builds_alert_message_with_ack_button() -> None:

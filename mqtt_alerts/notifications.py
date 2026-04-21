@@ -8,17 +8,20 @@ from datetime import datetime, timedelta, timezone
 import json
 from typing import Any, Protocol
 from urllib.parse import quote
+from urllib.parse import urlencode
 from urllib.request import Request
 from urllib.request import urlopen
 
 from mqtt_alerts.config import (
     NtfyBackendConfig,
     NotificationBackendConfig,
+    PushoverBackendConfig,
     TelegramBackendConfig,
 )
 from mqtt_alerts.models import ACK_STATUS_ACKNOWLEDGED, ACK_STATUS_ALREADY_ACKNOWLEDGED
 from mqtt_alerts.models import ACK_STATUS_NOT_ACTIVE, ACK_STATUS_NOT_FOUND
 from mqtt_alerts.models import AcknowledgementResult, AlertInstance, Notification
+from mqtt_alerts.models import NotificationDelivery, ReceiptAcknowledgement
 
 
 class NotificationError(Exception):
@@ -28,7 +31,7 @@ class NotificationError(Exception):
 class NotificationBackend(Protocol):  # pylint: disable=too-few-public-methods
     """Interface implemented by delivery backends."""
 
-    def send(self, notification: Notification) -> None:
+    def send(self, notification: Notification) -> NotificationDelivery | None:
         """Deliver one notification."""
 
 
@@ -65,7 +68,7 @@ class NotificationDispatcher:  # pylint: disable=too-few-public-methods
         """Expose configured backends to the runtime."""
         return self._backends
 
-    def send(self, notification: Notification) -> None:
+    def send(self, notification: Notification) -> NotificationDelivery | None:
         """Send a notification through the backend referenced by the rule."""
         try:
             backend = self._backends[notification.backend_id]
@@ -73,7 +76,7 @@ class NotificationDispatcher:  # pylint: disable=too-few-public-methods
             raise NotificationError(
                 f"unknown notification backend {notification.backend_id!r}"
             ) from error
-        backend.send(notification)
+        return backend.send(notification)
 
 
 class NtfyBackend:  # pylint: disable=too-few-public-methods
@@ -87,7 +90,7 @@ class NtfyBackend:  # pylint: disable=too-few-public-methods
         self._config = config
         self._opener = opener
 
-    def send(self, notification: Notification) -> None:
+    def send(self, notification: Notification) -> NotificationDelivery | None:
         """Deliver a notification to the configured ntfy topic."""
         request = Request(
             url=_build_ntfy_url(self._config.server, self._config.topic),
@@ -105,6 +108,145 @@ class NtfyBackend:  # pylint: disable=too-few-public-methods
             raise NotificationError(
                 f"failed to send notification to ntfy backend {self._config.id!r}: {error}"
             ) from error
+
+
+class PushoverBackend:  # pylint: disable=too-many-instance-attributes
+    """Send notifications through the Pushover Message API."""
+
+    def __init__(
+        self,
+        config: PushoverBackendConfig,
+        opener: Callable[..., Any] = urlopen,
+    ) -> None:
+        self._config = config
+        self._opener = opener
+        self._next_poll_at: datetime | None = None
+
+    @property
+    def backend_id(self) -> str:
+        """Return the configured backend id."""
+        return self._config.id
+
+    def ready_to_poll(self, now: datetime) -> bool:
+        """Whether the configured receipt polling interval allows another poll."""
+        if not self._config.polling_enabled:
+            return False
+        if self._next_poll_at is None:
+            return True
+        return now >= self._next_poll_at
+
+    def send(self, notification: Notification) -> NotificationDelivery | None:
+        """Deliver a notification to Pushover."""
+        payload = _build_pushover_payload(self._config, notification)
+        response = self._request_json(
+            "messages",
+            "https://api.pushover.net/1/messages.json",
+            payload,
+            timeout=10,
+        )
+        receipt = response.get("receipt")
+        if isinstance(receipt, str) and receipt.strip():
+            return NotificationDelivery(
+                alert_id=notification.alert_id,
+                backend_id=notification.backend_id,
+                receipt=receipt.strip(),
+            )
+        return None
+
+    def poll_receipts(
+        self,
+        alerts: list[AlertInstance],
+        now: datetime | None = None,
+    ) -> list[ReceiptAcknowledgement]:
+        """Poll Pushover emergency receipts for acknowledgements."""
+        current_time = now or datetime.now(timezone.utc)
+        if not self.ready_to_poll(current_time):
+            return []
+
+        self._next_poll_at = current_time + timedelta(
+            seconds=self._config.polling_interval_seconds
+        )
+        acknowledgements: list[ReceiptAcknowledgement] = []
+        for alert in alerts:
+            if alert.delivery_receipt is None:
+                continue
+            response = self._request_json(
+                "receipt",
+                (
+                    "https://api.pushover.net/1/receipts/"
+                    f"{quote(alert.delivery_receipt, safe='')}.json"
+                    f"?{urlencode({'token': self._config.api_token})}"
+                ),
+                None,
+                timeout=10,
+                method="GET",
+            )
+            if response.get("acknowledged") != 1:
+                continue
+            acknowledged_at = _parse_pushover_timestamp(response.get("acknowledged_at"))
+            acknowledgements.append(
+                ReceiptAcknowledgement(
+                    alert_id=alert.id,
+                    acknowledged_at=acknowledged_at or current_time,
+                    acknowledged_by=_format_pushover_acknowledger(response),
+                )
+            )
+        return acknowledgements
+
+    def cancel_receipt(self, receipt: str) -> None:
+        """Cancel retries for one emergency-priority Pushover receipt."""
+        self._request_json(
+            "cancel receipt",
+            (
+                "https://api.pushover.net/1/receipts/"
+                f"{quote(receipt, safe='')}/cancel.json"
+            ),
+            {"token": self._config.api_token},
+            timeout=10,
+        )
+
+    def _request_json(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        action: str,
+        url: str,
+        payload: dict[str, Any] | None,
+        timeout: int,
+        method: str = "POST",
+    ) -> dict[str, Any]:
+        data = None
+        headers = {}
+        if payload is not None:
+            data = urlencode(payload).encode("utf-8")
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        request = Request(url=url, data=data, headers=headers, method=method)
+
+        try:
+            with self._opener(request, timeout=timeout) as response:
+                raw_body = response.read()
+        except (
+            Exception
+        ) as error:  # pragma: no cover - exercised through tests with fakes
+            raise NotificationError(
+                f"failed to call Pushover backend {self._config.id!r}: {error}"
+            ) from error
+
+        try:
+            body = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise NotificationError(
+                f"Pushover backend {self._config.id!r} returned invalid JSON: {error}"
+            ) from error
+
+        if body.get("status") != 1:
+            errors = body.get("errors")
+            if isinstance(errors, list):
+                detail = ", ".join(str(item) for item in errors)
+            else:
+                detail = str(errors or "unknown error")
+            raise NotificationError(
+                f"Pushover backend {self._config.id!r} {action} failed: {detail}"
+            )
+        return body
 
 
 class TelegramBackend:  # pylint: disable=too-many-instance-attributes
@@ -139,7 +281,7 @@ class TelegramBackend:  # pylint: disable=too-many-instance-attributes
             return True
         return now >= self._next_poll_at
 
-    def send(self, notification: Notification) -> None:
+    def send(self, notification: Notification) -> NotificationDelivery | None:
         """Send one alert or recovery message to the configured Telegram chat."""
         message_text = _build_telegram_message_text(notification)
         payload: dict[str, Any] = {
@@ -352,6 +494,9 @@ def build_backends(
         if isinstance(config, NtfyBackendConfig):
             backends[config.id] = NtfyBackend(config)
             continue
+        if isinstance(config, PushoverBackendConfig):
+            backends[config.id] = PushoverBackend(config)
+            continue
         if isinstance(config, TelegramBackendConfig):
             backends[config.id] = TelegramBackend(config)
             continue
@@ -388,6 +533,69 @@ def _build_ntfy_headers(notification: Notification) -> dict[str, str]:
     if tags:
         headers["Tags"] = tags
     return headers
+
+
+def _build_pushover_payload(
+    config: PushoverBackendConfig,
+    notification: Notification,
+) -> dict[str, str | int]:
+    priority = _map_pushover_priority(config, notification)
+    payload: dict[str, str | int] = {
+        "token": config.api_token,
+        "user": config.user_key,
+        "title": notification.title,
+        "message": notification.message,
+        "priority": priority,
+        "timestamp": int(notification.occurred_at.timestamp()),
+    }
+    optional_values = {
+        "device": config.device,
+        "sound": config.sound,
+        "url": config.url,
+        "url_title": config.url_title,
+    }
+    for key, value in optional_values.items():
+        if value is not None:
+            payload[key] = value
+    if priority == 2:
+        payload["retry"] = config.emergency_retry_seconds
+        payload["expire"] = config.emergency_expire_seconds
+        payload["tags"] = f"mqtt-alerts,alert={notification.alert_id}"
+    return payload
+
+
+def _map_pushover_priority(
+    config: PushoverBackendConfig,
+    notification: Notification,
+) -> int:
+    if notification.kind == "recovery":
+        return 0
+    configured = config.priority_by_severity.get(notification.severity.lower())
+    if configured is not None:
+        return configured
+    return {
+        "low": 0,
+        "warning": 1,
+        "medium": 1,
+        "high": 1,
+        "critical": 2,
+    }.get(notification.severity.lower(), 0)
+
+
+def _parse_pushover_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, int) or value <= 0:
+        return None
+    return datetime.fromtimestamp(value, tz=timezone.utc)
+
+
+def _format_pushover_acknowledger(response: dict[str, Any]) -> str | None:
+    user_key = response.get("acknowledged_by")
+    device = response.get("acknowledged_by_device")
+    if isinstance(user_key, str) and user_key.strip():
+        if isinstance(device, str) and device.strip():
+            return f"pushover user {user_key.strip()} on {device.strip()}"
+        return f"pushover user {user_key.strip()}"
+    return None
 
 
 def _map_priority(severity: str) -> int:

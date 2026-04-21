@@ -142,6 +142,47 @@ class AlertEngine:
         ):
             self._alert_index[restored_state.current_alert.id] = key
 
+    def record_delivery_receipt(
+        self,
+        alert_id: str,
+        receipt: str,
+    ) -> AcknowledgementResult:
+        """Record a backend delivery receipt for an active alert instance."""
+        key = self._alert_index.get(alert_id)
+        if key is None:
+            return AcknowledgementResult(status=ACK_STATUS_NOT_FOUND)
+
+        state = self._state[key]
+        alert = state.current_alert
+        if alert is None or alert.id != alert_id:
+            self._alert_index.pop(alert_id, None)
+            return AcknowledgementResult(status=ACK_STATUS_NOT_FOUND)
+        if alert.state == ALERT_STATE_RESOLVED:
+            return AcknowledgementResult(status=ACK_STATUS_NOT_ACTIVE, alert=alert)
+
+        alert.delivery_receipt = receipt
+        updated_state = state.copy()
+        updated_alert = alert.copy()
+        return AcknowledgementResult(
+            status=ACK_STATUS_ACKNOWLEDGED,
+            alert=updated_alert,
+            state_updates={key: updated_state},
+            alert_updates={alert_id: updated_alert},
+        )
+
+    def active_alerts_for_backend(self, backend_id: str) -> list[AlertInstance]:
+        """Return active alert instances for a backend."""
+        alerts = []
+        for state in self._state.values():
+            alert = state.current_alert
+            if alert is None:
+                continue
+            if alert.backend_id != backend_id:
+                continue
+            if alert.state == ALERT_STATE_FIRING:
+                alerts.append(alert.copy())
+        return alerts
+
     def acknowledge_alert(
         self,
         alert_id: str,
