@@ -325,7 +325,6 @@ def _load_sensors(raw_value: Any, topic_prefix: str | None) -> list[SensorConfig
 
     sensors: list[SensorConfig] = []
     seen_sensor_ids: set[str] = set()
-    resolved_topics: set[str] = set()
     for index, item in enumerate(raw_value):
         entry = _require_mapping(item, f"sensors[{index}]")
         sensor_id = _require_string(entry.get("id"), f"sensors[{index}].id")
@@ -337,9 +336,6 @@ def _load_sensors(raw_value: Any, topic_prefix: str | None) -> list[SensorConfig
             topic_prefix,
             _require_string(entry.get("topic"), f"sensors[{index}].topic"),
         )
-        if resolved_topic in resolved_topics:
-            raise ConfigError(f"duplicate sensor topic {resolved_topic!r}")
-        resolved_topics.add(resolved_topic)
 
         rules = _load_rules(sensor_id, entry.get("rules"))
         sensors.append(
