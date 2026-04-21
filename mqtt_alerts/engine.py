@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -27,7 +28,13 @@ class AlertEngine:
         sensors: tuple[SensorConfig, ...],
         initial_state: dict[RuleKey, RuleState] | None = None,
     ) -> None:
-        self._sensors_by_topic = {sensor.topic: sensor for sensor in sensors}
+        sensors_by_topic: defaultdict[str, list[SensorConfig]] = defaultdict(list)
+        for sensor in sensors:
+            sensors_by_topic[sensor.topic].append(sensor)
+        self._sensors_by_topic = {
+            topic: tuple(topic_sensors)
+            for topic, topic_sensors in sensors_by_topic.items()
+        }
         self._sensors_by_key = {
             RuleKey(sensor_id=sensor.id, rule_id=rule.id): sensor
             for sensor in sensors
@@ -58,36 +65,36 @@ class AlertEngine:
         observed_at: datetime,
     ) -> EvaluationResult:
         """Evaluate one MQTT message and return the resulting state updates."""
-        sensor = self._sensors_by_topic[topic]
-        value = _extract_numeric_value(payload, sensor.value_field)
         notifications: list[Notification] = []
         state_updates: dict[RuleKey, RuleState] = {}
         alert_updates: dict[str, AlertInstance] = {}
         rollback_states: dict[RuleKey, RuleState] = {}
 
-        for rule in sensor.rules:
-            if not rule.enabled:
-                continue
+        for sensor in self._sensors_by_topic[topic]:
+            value = _extract_numeric_value(payload, sensor.value_field)
+            for rule in sensor.rules:
+                if not rule.enabled:
+                    continue
 
-            key = RuleKey(sensor_id=sensor.id, rule_id=rule.id)
-            state = self._state.setdefault(key, RuleState())
-            previous_state = state.copy()
-            previous_snapshot = previous_state.durable_snapshot()
-            notification, alert_update = self._evaluate_rule(
-                key,
-                sensor,
-                rule,
-                state,
-                value,
-                observed_at,
-            )
-            if state.durable_snapshot() != previous_snapshot:
-                state_updates[key] = state.copy()
-            if alert_update is not None:
-                alert_updates[alert_update.id] = alert_update.copy()
-            if notification is not None:
-                notifications.append(notification)
-                rollback_states[key] = previous_state
+                key = RuleKey(sensor_id=sensor.id, rule_id=rule.id)
+                state = self._state.setdefault(key, RuleState())
+                previous_state = state.copy()
+                previous_snapshot = previous_state.durable_snapshot()
+                notification, alert_update = self._evaluate_rule(
+                    key,
+                    sensor,
+                    rule,
+                    state,
+                    value,
+                    observed_at,
+                )
+                if state.durable_snapshot() != previous_snapshot:
+                    state_updates[key] = state.copy()
+                if alert_update is not None:
+                    alert_updates[alert_update.id] = alert_update.copy()
+                if notification is not None:
+                    notifications.append(notification)
+                    rollback_states[key] = previous_state
 
         return EvaluationResult(
             notifications=notifications,

@@ -75,6 +75,56 @@ def test_below_threshold_alerts_after_hold_time() -> None:
     assert result.notifications[0].direction == "below"
 
 
+def test_one_topic_can_evaluate_multiple_value_fields() -> None:
+    """A single MQTT message can update rules for multiple configured sensors."""
+    temperature_sensor = _build_sensor()
+    battery_sensor = SensorConfig(
+        id="freezer_battery",
+        name="Freezer battery",
+        topic="measurements/freezer1",
+        value_field="battery",
+        rules=(
+            RuleConfig(
+                id="low_battery",
+                direction="below",
+                threshold=2.6,
+                hysteresis=0.1,
+                hold_for=timedelta(minutes=30),
+                severity="critical",
+                backend="main_ntfy",
+            ),
+        ),
+    )
+    engine = AlertEngine((temperature_sensor, battery_sensor))
+    start = _utc(2025, 1, 1, 11, 0, 0)
+
+    assert engine.subscribed_topics() == ["measurements/freezer1"]
+
+    first = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.0, "battery": 2.5},
+        observed_at=start,
+    )
+    second = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.2, "battery": 2.5},
+        observed_at=start + timedelta(minutes=15),
+    )
+    third = engine.process_message(
+        "measurements/freezer1",
+        {"temperature": 6.3, "battery": 2.5},
+        observed_at=start + timedelta(minutes=30),
+    )
+
+    assert not first.notifications
+    assert [notification.sensor_id for notification in second.notifications] == [
+        "freezer_1"
+    ]
+    assert [notification.sensor_id for notification in third.notifications] == [
+        "freezer_battery"
+    ]
+
+
 def test_rule_resets_when_condition_clears_before_hold_time() -> None:
     """The active timer resets if the condition clears before the duration is reached."""
     engine = AlertEngine((_build_sensor(),))
