@@ -1,4 +1,4 @@
-.PHONY: install test lint build lock update-deps install-hooks check-commits
+.PHONY: install test lint build lock update-deps install-hooks check-commits verify
 
 default: test
 
@@ -10,6 +10,8 @@ install-hooks:
 
 check-commits:
 	python3 scripts/check_conventional_commits.py --range "$$(git merge-base HEAD origin/master)..HEAD"
+
+verify: check-commits lint test build
 
 test:
 	uv run pytest -v

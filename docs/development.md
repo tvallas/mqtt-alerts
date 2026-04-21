@@ -12,6 +12,7 @@ uv sync --group dev
 make install
 make install-hooks
 make check-commits
+make verify
 make lint
 make test
 make build
