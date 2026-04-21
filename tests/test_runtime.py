@@ -168,6 +168,62 @@ def test_poll_notification_backends_acknowledges_active_alert(
     state_store.close()
 
 
+def test_poll_notification_backends_acknowledges_pushover_receipt(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    """Pushover emergency receipt polling should persist alert acknowledgement."""
+    caplog.set_level("INFO")
+    state_store = SQLiteStateStore(str(tmp_path / "state.sqlite3"))
+    engine = AlertEngine((_build_sensor(),))
+    start = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
+    engine.process_message(
+        "measurements/A118636/27054",
+        {"reading": 7.0},
+        observed_at=start,
+    )
+    fired = engine.process_message(
+        "measurements/A118636/27054",
+        {"reading": 7.1},
+        observed_at=start + timedelta(minutes=20),
+    )
+    alert_id = fired.notifications[0].alert_id
+    engine.record_delivery_receipt(alert_id, "receipt-123")
+    app = MqttAlertsApp(
+        config=_build_config(str(tmp_path / "state.sqlite3")),
+        state_store=state_store,
+        dispatcher=NotificationDispatcher({}),
+        engine=engine,
+    )
+
+    class FakeBackend:
+        backend_id = "main_ntfy"
+
+        def ready_to_poll(self, _now):
+            return True
+
+        def poll_receipts(self, alerts, _now):
+            assert [alert.id for alert in alerts] == [alert_id]
+            return [
+                SimpleNamespace(
+                    alert_id=alert_id,
+                    acknowledged_at=start + timedelta(minutes=21),
+                    acknowledged_by="pushover user user-key",
+                )
+            ]
+
+    app._pushover_backends = lambda: [FakeBackend()]  # pylint: disable=protected-access
+
+    app._poll_notification_backends()  # pylint: disable=protected-access
+
+    state = state_store.load_states()[_rule_key()]
+    assert state.current_alert is not None
+    assert state.current_alert.state == "acknowledged"
+    assert state.current_alert.acknowledged_by == "pushover user user-key"
+    assert "acknowledged alert id=" in caplog.text
+    state_store.close()
+
+
 def _build_config(database_path: str) -> AppConfig:
     return AppConfig(
         mqtt=MqttConfig(host="localhost", topic_prefix="measurements"),

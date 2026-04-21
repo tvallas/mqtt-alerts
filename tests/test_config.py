@@ -9,6 +9,7 @@ import pytest
 from mqtt_alerts.config import (
     ConfigError,
     NtfyBackendConfig,
+    PushoverBackendConfig,
     TelegramBackendConfig,
     load_config,
 )
@@ -265,4 +266,97 @@ sensors:
     )
 
     with pytest.raises(ConfigError, match="telegram backend"):
+        load_config(config_path)
+
+
+def test_load_config_supports_pushover_backend(tmp_path: Path) -> None:
+    """Pushover backend config should parse emergency and polling settings."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+mqtt:
+  host: localhost
+
+notifications:
+  backends:
+    - id: main_pushover
+      type: pushover
+      api_token: app-token
+      user_key: user-key
+      device: iphone
+      sound: siren
+      url: https://example.test/alerts
+      url_title: Alert dashboard
+      priority_by_severity:
+        low: 0
+        warning: 1
+        critical: 2
+      emergency_retry_seconds: 60
+      emergency_expire_seconds: 3600
+      polling_enabled: true
+      polling_interval_seconds: 15.0
+
+sensors:
+  - id: freezer_1
+    topic: measurements/freezer1
+    value_field: temperature
+    rules:
+      - id: high_warn
+        direction: above
+        threshold: 5.0
+        for: 15m
+        severity: critical
+        backend: main_pushover
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    backend = config.notification_backends[0]
+    assert isinstance(backend, PushoverBackendConfig)
+    assert backend.api_token == "app-token"
+    assert backend.user_key == "user-key"
+    assert backend.device == "iphone"
+    assert backend.sound == "siren"
+    assert backend.priority_by_severity["critical"] == 2
+    assert backend.emergency_retry_seconds == 60
+    assert backend.emergency_expire_seconds == 3600
+    assert backend.polling_interval_seconds == 15.0
+
+
+def test_load_config_rejects_invalid_pushover_emergency_retry(
+    tmp_path: Path,
+) -> None:
+    """Pushover emergency retry intervals must satisfy the API minimum."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+mqtt:
+  host: localhost
+
+notifications:
+  backends:
+    - id: main_pushover
+      type: pushover
+      api_token: app-token
+      user_key: user-key
+      emergency_retry_seconds: 10
+
+sensors:
+  - id: freezer_1
+    topic: measurements/freezer1
+    value_field: temperature
+    rules:
+      - id: high_warn
+        direction: above
+        threshold: 5.0
+        for: 15m
+        severity: critical
+        backend: main_pushover
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="at least 30"):
         load_config(config_path)

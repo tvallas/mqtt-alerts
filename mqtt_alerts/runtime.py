@@ -14,11 +14,13 @@ from mqtt_alerts.config import AppConfig, ConfigError, load_config
 from mqtt_alerts.engine import AlertEngine
 from mqtt_alerts.models import ACK_STATUS_ACKNOWLEDGED, ACK_STATUS_ALREADY_ACKNOWLEDGED
 from mqtt_alerts.models import ACK_STATUS_NOT_ACTIVE, ACK_STATUS_NOT_FOUND
+from mqtt_alerts.models import ALERT_STATE_RESOLVED
 from mqtt_alerts.models import AcknowledgementResult, EvaluationResult, RuleKey
 from mqtt_alerts.models import RuleState
 from mqtt_alerts.notifications import (
     NotificationDispatcher,
     NotificationError,
+    PushoverBackend,
     TelegramBackend,
 )
 from mqtt_alerts.notifications import build_backends
@@ -159,6 +161,7 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
             return
 
         self._deliver_notifications(result)
+        self._cancel_resolved_pushover_retries(result)
         self._state_store.save_updates(result.state_updates, result.alert_updates)
 
     def _send_due_reminders(self) -> None:
@@ -174,7 +177,14 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
                 sensor_id=notification.sensor_id, rule_id=notification.rule_id
             )
             try:
-                self._dispatcher.send(notification)
+                delivery = self._dispatcher.send(notification)
+                if delivery is not None and delivery.receipt is not None:
+                    receipt_result = self._engine.record_delivery_receipt(
+                        delivery.alert_id,
+                        delivery.receipt,
+                    )
+                    result.state_updates.update(receipt_result.state_updates)
+                    result.alert_updates.update(receipt_result.alert_updates)
                 LOGGER.info(
                     "sent %s %s notification for sensor=%s rule=%s",
                     notification.kind,
@@ -223,6 +233,34 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
                         backend.backend_id,
                         error,
                     )
+
+        for backend in self._pushover_backends():
+            if not backend.ready_to_poll(now):
+                continue
+            alerts = self._engine.active_alerts_for_backend(backend.backend_id)
+            if not alerts:
+                continue
+            try:
+                acknowledgements = backend.poll_receipts(alerts, now)
+            except NotificationError as error:
+                LOGGER.warning(
+                    "Pushover receipt polling failed for backend %s: %s",
+                    backend.backend_id,
+                    error,
+                )
+                continue
+            for acknowledgement in acknowledgements:
+                result = self._engine.acknowledge_alert(
+                    acknowledgement.alert_id,
+                    acknowledged_at=acknowledgement.acknowledged_at,
+                    acknowledged_by=acknowledgement.acknowledged_by,
+                )
+                if result.state_updates or result.alert_updates:
+                    self._state_store.save_updates(
+                        result.state_updates,
+                        result.alert_updates,
+                    )
+                _log_acknowledgement_result(result, acknowledgement.alert_id)
 
     def _reload_config_if_changed(self) -> None:
         if self._config_path is None:
@@ -306,6 +344,30 @@ class MqttAlertsApp:  # pylint: disable=too-many-instance-attributes,too-many-ar
             for backend in self._dispatcher.backends.values()
             if isinstance(backend, TelegramBackend)
         ]
+
+    def _pushover_backends(self) -> list[PushoverBackend]:
+        return [
+            backend
+            for backend in self._dispatcher.backends.values()
+            if isinstance(backend, PushoverBackend)
+        ]
+
+    def _cancel_resolved_pushover_retries(self, result: EvaluationResult) -> None:
+        for alert in result.alert_updates.values():
+            if alert.state != ALERT_STATE_RESOLVED or alert.delivery_receipt is None:
+                continue
+            backend = self._dispatcher.backends.get(alert.backend_id)
+            if not isinstance(backend, PushoverBackend):
+                continue
+            try:
+                backend.cancel_receipt(alert.delivery_receipt)
+            except NotificationError as error:
+                LOGGER.warning(
+                    "Pushover retry cancellation failed for backend %s alert=%s: %s",
+                    backend.backend_id,
+                    alert.id,
+                    error,
+                )
 
 
 def _decode_payload(raw_payload: bytes) -> dict[str, object]:

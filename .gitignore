@@ -44,6 +44,7 @@ ENV/
 config.yml
 config.local.yml
 config.ntfy.yml
+config.telegram.yml
 mqtt-alerts.sqlite3
 *.sqlite3
 *.sqlite3-journal

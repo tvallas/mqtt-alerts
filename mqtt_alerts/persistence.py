@@ -47,7 +47,8 @@ class SQLiteStateStore:
               ai.triggered_at AS alert_triggered_at,
               ai.acknowledged_at AS alert_acknowledged_at,
               ai.acknowledged_by AS alert_acknowledged_by,
-              ai.resolved_at AS alert_resolved_at
+              ai.resolved_at AS alert_resolved_at,
+              ai.delivery_receipt AS alert_delivery_receipt
             FROM rule_state rs
             LEFT JOIN alert_instance ai ON ai.id = rs.active_alert_id
             """).fetchall()
@@ -97,8 +98,9 @@ class SQLiteStateStore:
                       triggered_at,
                       acknowledged_at,
                       acknowledged_by,
-                      resolved_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      resolved_at,
+                      delivery_receipt
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                       sensor_id = excluded.sensor_id,
                       sensor_name = excluded.sensor_name,
@@ -113,7 +115,8 @@ class SQLiteStateStore:
                       triggered_at = excluded.triggered_at,
                       acknowledged_at = excluded.acknowledged_at,
                       acknowledged_by = excluded.acknowledged_by,
-                      resolved_at = excluded.resolved_at
+                      resolved_at = excluded.resolved_at,
+                      delivery_receipt = excluded.delivery_receipt
                     """,
                     (
                         alert.id,
@@ -131,6 +134,7 @@ class SQLiteStateStore:
                         _serialize_datetime(alert.acknowledged_at),
                         alert.acknowledged_by,
                         _serialize_datetime(alert.resolved_at),
+                        alert.delivery_receipt,
                     ),
                 )
 
@@ -219,9 +223,11 @@ class SQLiteStateStore:
               triggered_at TEXT,
               acknowledged_at TEXT,
               acknowledged_by TEXT,
-              resolved_at TEXT
+              resolved_at TEXT,
+              delivery_receipt TEXT
             )
             """)
+        self._ensure_column("alert_instance", "delivery_receipt", "TEXT")
         self._backfill_legacy_alert_instances()
         self._connection.commit()
 
@@ -345,4 +351,5 @@ def _parse_alert_instance_row(row: sqlite3.Row) -> AlertInstance | None:
         acknowledged_at=_parse_datetime(row["alert_acknowledged_at"]),
         acknowledged_by=row["alert_acknowledged_by"],
         resolved_at=_parse_datetime(row["alert_resolved_at"]),
+        delivery_receipt=row["alert_delivery_receipt"],
     )
