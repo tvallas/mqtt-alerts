@@ -7,10 +7,18 @@ name = "mqtt-alerts"
 version = "0.4.0"
 description = "MQTT alert daemon with pluggable notification backends"
 readme = "README.md"
+license = "MIT"
 authors = [
   { name = "topo", email = "tvallas@iki.fi" }
 ]
 requires-python = ">=3.10"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
 dependencies = [
   "paho-mqtt>=2,<3",
   "PyYAML>=6,<7",
