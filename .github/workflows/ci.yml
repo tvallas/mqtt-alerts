@@ -14,9 +14,36 @@ permissions:
   contents: read
 
 jobs:
+  commit-messages:
+    name: Commit messages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate Conventional Commit messages
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            python3 scripts/check_conventional_commits.py --message "$PR_TITLE"
+            python3 scripts/check_conventional_commits.py --range "$BASE_SHA..$HEAD_SHA"
+          else
+            python3 scripts/check_conventional_commits.py --range "$BEFORE_SHA..$HEAD_SHA"
+          fi
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    needs: commit-messages
     strategy:
       fail-fast: false
       matrix:

@@ -10,10 +10,25 @@ uv sync --group dev
 
 ```sh
 make install
+make install-hooks
+make check-commits
 make lint
 make test
 make build
 ```
+
+## Commit Message Checks
+
+This project uses semantic-release with Conventional Commits. Install the
+repository-managed Git hooks once per clone:
+
+```sh
+make install-hooks
+```
+
+The hook validates the final commit message at the `commit-msg` stage. CI runs
+the same checker for pull request titles and non-merge commit subjects so
+release-relevant commit messages stay compatible with semantic-release.
 
 ## Project Structure
 
