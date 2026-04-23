@@ -2,6 +2,29 @@
 
 <!-- version list -->
 
+## v0.4.3 (2026-04-23)
+
+### Bug Fixes
+
+- **changelog**: Restore release history
+  ([`a3e6bf9`](https://github.com/tvallas/mqtt-alerts/commit/a3e6bf95a12d8b8e8dca2e8b598de4c81907ebe9))
+
+### Chores
+
+- Add aggregate verification target
+  ([`ed94714`](https://github.com/tvallas/mqtt-alerts/commit/ed94714c0a9d0d29109503d518d08ca98f5f21ee))
+
+### Continuous Integration
+
+- Enforce conventional commit messages
+  ([`582addd`](https://github.com/tvallas/mqtt-alerts/commit/582addd1ddf28f1032b8ecefc580adc56be42548))
+
+### Documentation
+
+- Add repository contributor guidance
+  ([`9422578`](https://github.com/tvallas/mqtt-alerts/commit/942257870aa532eaffd7e8a55318048cf6adb103))
+
+
 ## Unreleased
 
 ### Chores
