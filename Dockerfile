@@ -16,7 +16,8 @@ FROM python:3.14-alpine
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN apk upgrade --no-cache
+RUN apk upgrade --no-cache && \
+    python -m pip install --no-cache-dir --upgrade "pip>=26.1"
 
 COPY --from=builder /tmp/wheels /tmp/wheels
 
