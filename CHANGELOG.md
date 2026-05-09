@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.4.4 (2026-05-09)
+
+### Bug Fixes
+
+- **docker**: Upgrade runtime pip before wheel install
+  ([`f459de3`](https://github.com/tvallas/mqtt-alerts/commit/f459de39d6d7173b3b7108bb78ad9382cc81a3ef))
+
+### Chores
+
+- **deps**: Bump aquasecurity/trivy-action
+  ([`607f3b1`](https://github.com/tvallas/mqtt-alerts/commit/607f3b116217933f23e5378c0a34b977eb1fb211))
+
+
 ## v0.4.3 (2026-04-23)
 
 ### Bug Fixes
