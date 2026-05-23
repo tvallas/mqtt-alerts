@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.4.5 (2026-05-23)
+
+### Bug Fixes
+
+- **deps**: Bump black in the python-minor-patch group
+  ([`1f67056`](https://github.com/tvallas/mqtt-alerts/commit/1f6705610513f15108ddf4d5c8ec58ea56681b2b))
+
+
 ## v0.4.4 (2026-05-09)
 
 ### Bug Fixes
