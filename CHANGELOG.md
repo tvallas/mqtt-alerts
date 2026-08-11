@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.4.7 (2026-08-11)
+
+### Bug Fixes
+
+- **ci**: Limit Trivy image scan to OS vulnerabilities
+  ([`65f85e3`](https://github.com/tvallas/mqtt-alerts/commit/65f85e344eec31e3116d4e150527635aae71307f))
+
+
 ## v0.4.6 (2026-08-11)
 
 ### Bug Fixes
