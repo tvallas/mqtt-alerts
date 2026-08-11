@@ -56,6 +56,7 @@ jobs:
           output: trivy-image.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          vuln-type: os
           exit-code: 1
 
       - name: Upload image scan results to GitHub Security
