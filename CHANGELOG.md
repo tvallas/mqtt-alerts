@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.4.6 (2026-08-11)
+
+### Bug Fixes
+
+- **deps**: Bump the python-minor-patch group across 1 directory with 3 updates
+  ([`958ef0a`](https://github.com/tvallas/mqtt-alerts/commit/958ef0ab383921c139cef965d9f93a6550e5ac8f))
+
+### Chores
+
+- **deps**: Bump actions/checkout from 6 to 7
+  ([`a53f88e`](https://github.com/tvallas/mqtt-alerts/commit/a53f88e1e79330b2864003198c8e417b8485611c))
+
+
 ## v0.4.5 (2026-05-23)
 
 ### Bug Fixes
